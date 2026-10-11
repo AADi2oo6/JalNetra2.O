@@ -1,18 +1,16 @@
-# JalNetra 2.0 (Phase 3: Sentinel-2 Satellite Acquisition)
+# JalNetra 2.0 (Phase 4: Interactive GIS Map & Satellite Raster Visualization)
 
 **JalNetra 2.0** is an open-source, scalable geospatial platform engineered for monitoring water bodies, surface water extent, water quality indices, and hydrological anomalies using satellite observations and remote sensing telemetry.
 
-## Current Development Phase: Phase 3 Complete
+## Current Development Phase: Phase 4 Complete
 
-This repository has completed **Phase 3: Sentinel-2 Satellite Data Acquisition**. It provides a fully decoupled, public STAC-driven scene discovery and atomic asset acquisition subsystem:
-- **Provider Abstraction (`SatelliteProvider`)**: Decouples satellite catalogs from application logic. Initialized with **Earth Search (AWS Element84)** providing open public HTTP access to Sentinel-2 L2A Cloud-Optimized GeoTIFF (COG) data without requiring AWS credentials or SDK keys. (Copernicus Data Space or other STAC catalogs can be added cleanly as future providers).
-- **Target Spatial STAC Search**: Constrained by the selected water body's GeoJSON geometry or bounding box, datetime intervals, and maximum cloud cover percentage.
-- **Deterministic Multi-Factor Scene Ranking**: Scores candidate scenes based on cloud cover percentage (50%), spatial overlap with the target water body (30%), and sensing date recency (20%).
-- **Controlled Asset Ingestion**: Normalizes canonical band mapping (`B02`, `B03`, `B04`, `B08`, `B11`, `B12`, `SCL`, `thumbnail`). Downloads requested spectral assets using streaming chunks, atomic temporary file replacement, and SHA256 verification.
-- **Idempotency & Duplicate Prevention**: Re-downloading an existing asset whose local checksum matches is prevented.
-- **Independent Scene Directories**: Avoids raster overwrite bugs by structuring storage under `data/scenes/{scene_id}/assets/{asset_key}.tif` with dedicated `metadata.json`.
-- **Database Tracking**: Fully registers `SatelliteScene` and `SatelliteAsset` records in SQLite via SQLAlchemy repositories.
-- **Developer UI**: Interactive satellite tab in React enabling water body selection, STAC querying, scene ranking inspection, and selective asset downloads.
+This repository has completed **Phase 4: Interactive GIS Map & Satellite Imagery Visualization**. It provides an operational GIS interface and safe backend raster alignment pipeline:
+- **Interactive Monitoring Map**: Built using Leaflet and React-Leaflet with OpenStreetMap base tiles, dynamic auto-fitting camera bounds, layer toggles, and symbology legend.
+- **Water Body Vector Layer**: GeoJSON polygon/centroid visualization of all tracked water bodies with click-to-inspect popups and zooming.
+- **Scene Footprint Layer**: Visualizes Sentinel-2 scene spatial coverage boundaries distinct from water body geometries.
+- **On-Demand Sentinel-2 RGB Rendering**: Aligns B04 (Red), B03 (Green), and B02 (Blue) GeoTIFFs, reprojects native UTM coordinates to EPSG:4326 (WGS84) via Rasterio `WarpedVRT`, handles NoData/invalid masks transparently, and applies 2nd-to-98th percentile contrast stretching.
+- **Safe Raster Caching & Serving**: Saves optimized display products to `data/processed/map/{scene_id}/rgb.png` with metadata JSON. Cached products are instantly reused on subsequent requests. Original GeoTIFF assets are never modified.
+- **Security & Path Traversal Prevention**: Only serves registered scenes through database UUID lookups; rejects arbitrary filesystem path requests.
 
 ---
 
@@ -89,7 +87,12 @@ SATELLITE_CACHE_TTL_SECONDS=86400
 
 ---
 
-## API Endpoints
+### Interactive Map & Raster APIs (`/api/v1/map`)
+- `GET /api/v1/map/water-bodies/geojson`: Returns GeoJSON FeatureCollection of all tracked water bodies with polygon geometry, centroids, and attributes.
+- `GET /api/v1/map/scenes?water_body_id={id}`: Lists registered satellite scenes for the water body with footprint GeoJSON, acquisition status, and RGB readiness.
+- `GET /api/v1/map/scenes/{scene_id}/metadata`: Inspects native CRS, geographic bounds (EPSG:4326), dimensions, and asset readiness without exposing internal filesystem paths.
+- `GET /api/v1/map/scenes/{scene_id}/rgb?force_regenerate={bool}`: Triggers/retrieves aligned, reprojected, contrast-stretched True-Color RGB visualization bounds and image URL.
+- `GET /api/v1/map/scenes/{scene_id}/rgb/image`: Streams the rendered RGBA PNG image overlay for Leaflet.
 
 ### Satellite API (`/api/v1/satellite`)
 - `GET /api/v1/satellite/scenes/search?water_body_id={id}&start_date={iso}&end_date={iso}&max_cloud_cover={%}&limit={n}`: Search Sentinel-2 L2A scenes for a water body using STAC with automatic ranking and response caching.

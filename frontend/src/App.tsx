@@ -4,10 +4,11 @@ import { Navigation } from './components/Navigation';
 import { Dashboard } from './pages/Dashboard';
 import { DiscoveryPage } from './pages/DiscoveryPage';
 import { SatellitePage } from './pages/SatellitePage';
+import { MapPage } from './pages/MapPage';
 import { checkHealth, HealthStatus } from './api';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<string>('overview');
+  const [currentTab, setCurrentTab] = useState<string>('map');
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'offline'>('checking');
   const [healthData, setHealthData] = useState<HealthStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -51,6 +52,7 @@ export const App: React.FC = () => {
             onRefresh={fetchStatus}
           />
         )}
+        {currentTab === 'map' && <MapPage />}
         {currentTab === 'discovery' && <DiscoveryPage />}
         {currentTab === 'satellite' && <SatellitePage />}
         {currentTab === 'catalog' && (
@@ -61,7 +63,7 @@ export const App: React.FC = () => {
             onRefresh={fetchStatus}
           />
         )}
-        {currentTab !== 'overview' && currentTab !== 'discovery' && currentTab !== 'satellite' && currentTab !== 'catalog' && (
+        {currentTab !== 'overview' && currentTab !== 'map' && currentTab !== 'discovery' && currentTab !== 'satellite' && currentTab !== 'catalog' && (
           <div style={styles.placeholderCard}>
             <h3 style={styles.placeholderTitle}>MODULE RESERVED FOR FUTURE PHASE</h3>
             <p style={styles.placeholderDesc}>

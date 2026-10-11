@@ -281,3 +281,95 @@ export async function acquireSceneAssets(
   });
   return handleResponse<SceneAcquisitionResponse>(response);
 }
+
+// Map & Raster API (Phase 4)
+export interface MapGeoBounds {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}
+
+export interface MapSceneItem {
+  scene_id: string;
+  external_scene_id: string;
+  provider: string;
+  collection: string;
+  sensing_start: string;
+  cloud_cover_percent?: number | null;
+  status: string;
+  footprint?: any;
+  bbox?: number[] | null;
+  downloaded_assets: string[];
+  has_rgb: boolean;
+}
+
+export interface SceneRasterMetadata {
+  scene_id: string;
+  external_scene_id: string;
+  provider: string;
+  collection: string;
+  sensing_start: string;
+  cloud_cover_percent?: number | null;
+  crs?: string | null;
+  geographic_bounds?: MapGeoBounds | null;
+  native_bounds?: Record<string, any> | null;
+  available_assets: Array<{
+    asset_key: string;
+    asset_type?: string | null;
+    file_size_bytes?: number | null;
+    crs?: string | null;
+    width?: number | null;
+    height?: number | null;
+    resolution_meters?: number | null;
+    nodata?: number | null;
+    is_downloaded: boolean;
+  }>;
+  rgb_available: boolean;
+  rgb_cached: boolean;
+  image_url?: string | null;
+}
+
+export interface RGBVisualizationData {
+  scene_id: string;
+  external_scene_id: string;
+  crs: string;
+  bounds: MapGeoBounds;
+  width: number;
+  height: number;
+  image_url: string;
+  cached: boolean;
+  description: string;
+}
+
+export async function getWaterBodiesGeoJson(): Promise<any> {
+  const response = await fetch(`${BASE_URL}/api/v1/map/water-bodies/geojson`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<any>(response);
+}
+
+export async function getMapScenes(waterBodyId: string): Promise<MapSceneItem[]> {
+  const response = await fetch(`${BASE_URL}/api/v1/map/scenes?water_body_id=${encodeURIComponent(waterBodyId)}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<MapSceneItem[]>(response);
+}
+
+export async function getSceneRasterMetadata(sceneId: string): Promise<SceneRasterMetadata> {
+  const response = await fetch(`${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/metadata`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<SceneRasterMetadata>(response);
+}
+
+export async function getSceneRGBVisualization(sceneId: string, forceRegenerate = false): Promise<RGBVisualizationData> {
+  const response = await fetch(`${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/rgb?force_regenerate=${forceRegenerate}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<RGBVisualizationData>(response);
+}
+
+export function getSceneRGBImageUrl(sceneId: string): string {
+  return `${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/rgb/image`;
+}

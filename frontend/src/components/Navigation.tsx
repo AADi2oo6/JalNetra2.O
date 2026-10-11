@@ -8,11 +8,12 @@ interface NavigationProps {
 export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange }) => {
   const tabs = [
     { id: 'overview', label: 'SYSTEM OVERVIEW' },
+    { id: 'map', label: 'MONITORING MAP (PHASE 4)' },
     { id: 'discovery', label: 'GLOBAL DISCOVERY (PHASE 2)' },
     { id: 'catalog', label: 'WATER BODY CATALOG (PHASE 1)' },
     { id: 'satellite', label: 'SENTINEL-2 / SCENES (PHASE 3)' },
-    { id: 'analytics', label: 'WATER DETECTION & ML (PHASE 4)' },
-    { id: 'alerts', label: 'TELEMETRY & ALERTS (PHASE 5)' },
+    { id: 'analytics', label: 'WATER DETECTION & ML (PHASE 5)' },
+    { id: 'alerts', label: 'TELEMETRY & ALERTS (PHASE 6)' },
   ];
 
   return (
