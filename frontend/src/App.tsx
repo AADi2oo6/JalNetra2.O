@@ -2,6 +2,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Navigation } from './components/Navigation';
 import { Dashboard } from './pages/Dashboard';
+import { DiscoveryPage } from './pages/DiscoveryPage';
+import { SatellitePage } from './pages/SatellitePage';
 import { checkHealth, HealthStatus } from './api';
 
 export const App: React.FC = () => {
@@ -49,7 +51,17 @@ export const App: React.FC = () => {
             onRefresh={fetchStatus}
           />
         )}
-        {currentTab !== 'overview' && (
+        {currentTab === 'discovery' && <DiscoveryPage />}
+        {currentTab === 'satellite' && <SatellitePage />}
+        {currentTab === 'catalog' && (
+          <Dashboard
+            status={backendStatus}
+            healthData={healthData}
+            error={errorMessage}
+            onRefresh={fetchStatus}
+          />
+        )}
+        {currentTab !== 'overview' && currentTab !== 'discovery' && currentTab !== 'satellite' && currentTab !== 'catalog' && (
           <div style={styles.placeholderCard}>
             <h3 style={styles.placeholderTitle}>MODULE RESERVED FOR FUTURE PHASE</h3>
             <p style={styles.placeholderDesc}>

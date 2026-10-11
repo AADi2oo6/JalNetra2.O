@@ -16,6 +16,8 @@ from app.services.water_body_service import (
     WaterBodyNotFoundError,
 )
 from app.services.storage_service import StoragePathTraversalError
+from app.services.discovery import DiscoveryProviderError
+from app.services.satellite import SatelliteServiceError
 
 logger = logging.getLogger("jalnetra")
 
@@ -94,6 +96,27 @@ def create_app() -> FastAPI:
             status_code=status.HTTP_400_BAD_REQUEST,
             content=ErrorResponse(
                 error={"code": "INVALID_PATH", "message": "Invalid storage path specified."}
+            ).model_dump(),
+        )
+
+    @app.exception_handler(DiscoveryProviderError)
+    async def discovery_error_handler(request: Request, exc: DiscoveryProviderError):
+        logger.warning("Discovery provider error: %s", exc.message)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=ErrorResponse(
+                error={"code": exc.code, "message": exc.message}
+            ).model_dump(),
+        )
+
+    @app.exception_handler(SatelliteServiceError)
+    async def satellite_error_handler(request: Request, exc: SatelliteServiceError):
+        logger.warning("Satellite service error: %s", exc.message)
+        status_code = status.HTTP_404_NOT_FOUND if "NOT_FOUND" in exc.code else status.HTTP_400_BAD_REQUEST
+        return JSONResponse(
+            status_code=status_code,
+            content=ErrorResponse(
+                error={"code": exc.code, "message": exc.message}
             ).model_dump(),
         )
 

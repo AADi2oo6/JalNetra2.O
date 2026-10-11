@@ -25,6 +25,20 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
 
+    # Water Body Discovery (Phase 2)
+    WATERBODY_DISCOVERY_ENABLED: bool = True
+    WATERBODY_DISCOVERY_PROVIDER: str = "osm"
+    WATERBODY_DISCOVERY_TIMEOUT_SECONDS: float = 15.0
+    WATERBODY_DISCOVERY_CACHE_TTL_SECONDS: int = 86400
+    WATERBODY_DISCOVERY_USER_AGENT: str = "JalNetra/2.0 (Geospatial Water Resource Monitoring; contact@jalnetra.local)"
+
+    # Satellite Acquisition (Phase 3)
+    SATELLITE_PROVIDER: str = "earth_search"
+    SATELLITE_STAC_URL: str = "https://earth-search.aws.element84.com/v1"
+    SATELLITE_COLLECTION: str = "sentinel-2-c1-l2a"
+    SATELLITE_REQUEST_TIMEOUT_SECONDS: float = 60.0
+    SATELLITE_CACHE_TTL_SECONDS: int = 86400
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",

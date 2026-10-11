@@ -1,202 +1,106 @@
-# JalNetra 2.0 (Phase 1: Local Database + Storage Foundation)
+# JalNetra 2.0 (Phase 3: Sentinel-2 Satellite Acquisition)
 
 **JalNetra 2.0** is an open-source, scalable geospatial platform engineered for monitoring water bodies, surface water extent, water quality indices, and hydrological anomalies using satellite observations and remote sensing telemetry.
 
-## Current Development Phase: Phase 1 Complete
+## Current Development Phase: Phase 3 Complete
 
-This repository has completed **Phase 1: Local Database + Storage Foundation**. It establishes a production-grade local persistence and storage abstraction layer:
-- **SQLite Database with Alembic Migrations**: Fully version-controlled schemas (`alembic upgrade head`) replacing runtime auto-generation.
-- **Relational Domain Models**: `WaterBody`, `SatelliteScene`, `SatelliteAsset`, `AnalysisRun`, `CacheEntry` with clean foreign keys and indexes.
-- **Layered Architecture**: API Routes &rarr; Service Layer &rarr; Repository Layer &rarr; SQLAlchemy 2.x &rarr; SQLite.
-- **Local Storage Abstraction (`LocalStorageService`)**: Secure file path traversal prevention, atomic writes, SHA256 checksums, and deterministic directory structures.
-- **Water Body CRUD & Storage Status APIs**: Fully tested RESTful endpoints with Pydantic v2 schemas and centralized exception handling.
-- **Persistence Verification**: Tests validating data survival across engine disconnections and process restarts.
+This repository has completed **Phase 3: Sentinel-2 Satellite Data Acquisition**. It provides a fully decoupled, public STAC-driven scene discovery and atomic asset acquisition subsystem:
+- **Provider Abstraction (`SatelliteProvider`)**: Decouples satellite catalogs from application logic. Initialized with **Earth Search (AWS Element84)** providing open public HTTP access to Sentinel-2 L2A Cloud-Optimized GeoTIFF (COG) data without requiring AWS credentials or SDK keys. (Copernicus Data Space or other STAC catalogs can be added cleanly as future providers).
+- **Target Spatial STAC Search**: Constrained by the selected water body's GeoJSON geometry or bounding box, datetime intervals, and maximum cloud cover percentage.
+- **Deterministic Multi-Factor Scene Ranking**: Scores candidate scenes based on cloud cover percentage (50%), spatial overlap with the target water body (30%), and sensing date recency (20%).
+- **Controlled Asset Ingestion**: Normalizes canonical band mapping (`B02`, `B03`, `B04`, `B08`, `B11`, `B12`, `SCL`, `thumbnail`). Downloads requested spectral assets using streaming chunks, atomic temporary file replacement, and SHA256 verification.
+- **Idempotency & Duplicate Prevention**: Re-downloading an existing asset whose local checksum matches is prevented.
+- **Independent Scene Directories**: Avoids raster overwrite bugs by structuring storage under `data/scenes/{scene_id}/assets/{asset_key}.tif` with dedicated `metadata.json`.
+- **Database Tracking**: Fully registers `SatelliteScene` and `SatelliteAsset` records in SQLite via SQLAlchemy repositories.
+- **Developer UI**: Interactive satellite tab in React enabling water body selection, STAC querying, scene ranking inspection, and selective asset downloads.
 
 ---
 
-## Architecture Diagram
+## Satellite Acquisition Architecture
 
 ```text
-Frontend (React + Vite)
-   │
-   ▼ HTTP / JSON
-FastAPI API Layer (app/api/v1/)
-   │
-   ▼
-Service Layer (app/services/)
-   ├── WaterBodyService
-   └── LocalStorageService ──▶ data/ (Local Filesystem: scenes, processed, cache, etc.)
-   │
-   ▼
-Repository Layer (app/db/repositories/)
-   ├── WaterBodyRepository
-   ├── SatelliteSceneRepository
-   ├── SatelliteAssetRepository
-   ├── AnalysisRunRepository
-   └── CacheRepository
-   │
-   ▼
-SQLAlchemy 2.x / Alembic
-   │
-   ▼
-SQLite Database (data/database/jalnetra.db)
+User / Frontend
+      │
+      ▼ HTTP GET /api/v1/satellite/scenes/search?water_body_id=...
+Satellite API Layer
+      │
+      ▼
+SatelliteService
+      │
+      ├──▶ 1. Check SatelliteCacheService ──▶ Valid Cache? ──(YES)──▶ Return Cached
+      │                                                │ (NO)
+      ▼                                                ▼
+SatelliteProvider (Earth Search STAC) ◀────────────────┘
+      │
+      ▼ (Raw STAC GeoJSON Features)
+Scene Normalization & Canonical Band Mapping (B02..B12, SCL)
+      │
+      ▼
+Deterministic Multi-Factor Ranking (Cloud 50% + Overlap 30% + Recency 20%)
+      │
+      ▼
+Write to STAC Cache (data/cache/stac_*.json + SQLite cache_entries)
+      │
+      ▼ Return Ranked Scenes to User
+User Selects Scene & Assets to Acquire
+      │
+      ▼ HTTP POST /api/v1/satellite/scenes/{id}/acquire
+Streaming Download via Atomic Temp File & SHA256 Checksum
+      │
+      ▼ Save to data/scenes/{scene_id}/assets/{asset_key}.tif
+Register / Update SQLite SatelliteScene & SatelliteAsset Records
 ```
 
 ---
 
-## Directory Structure
+## Local Scene Storage Structure
+
+Each acquired scene is completely isolated:
 
 ```text
-JalNetra2.O/
-├── backend/
-│   ├── alembic/                      # Alembic migrations directory
-│   │   ├── versions/                 # Version-controlled schema scripts
-│   │   └── env.py                    # Alembic runtime environment
-│   ├── alembic.ini                   # Alembic configuration
-│   ├── app/
-│   │   ├── api/
-│   │   │   └── v1/
-│   │   │       ├── health.py         # Service health check router
-│   │   │       ├── water_bodies.py   # Water-body CRUD API router
-│   │   │       ├── storage.py        # Storage and database status router
-│   │   │       └── __init__.py
-│   │   ├── core/
-│   │   │   ├── config.py             # Pydantic v2 settings management
-│   │   │   ├── logging.py            # Centralized timestamped logging
-│   │   │   └── paths.py              # Repository root & data path resolution
-│   │   ├── db/
-│   │   │   ├── models/               # SQLAlchemy 2 models
-│   │   │   │   ├── water_body.py
-│   │   │   │   ├── satellite_scene.py
-│   │   │   │   ├── satellite_asset.py
-│   │   │   │   ├── analysis_run.py
-│   │   │   │   ├── cache_entry.py
-│   │   │   │   └── __init__.py
-│   │   │   ├── repositories/         # Repository pattern for DB operations
-│   │   │   │   ├── water_body_repository.py
-│   │   │   │   ├── satellite_scene_repository.py
-│   │   │   │   ├── satellite_asset_repository.py
-│   │   │   │   ├── analysis_run_repository.py
-│   │   │   │   ├── cache_repository.py
-│   │   │   │   └── __init__.py
-│   │   │   └── database.py           # Engine & SessionLocal provider
-│   │   ├── schemas/                  # Pydantic v2 validation DTOs
-│   │   │   ├── water_body.py
-│   │   │   ├── satellite_scene.py
-│   │   │   ├── satellite_asset.py
-│   │   │   ├── analysis_run.py
-│   │   │   ├── cache.py
-│   │   │   └── __init__.py
-│   │   ├── services/                 # Business logic & filesystem abstraction
-│   │   │   ├── water_body_service.py
-│   │   │   ├── storage_service.py
-│   │   │   └── __init__.py
-│   │   ├── __init__.py
-│   │   └── main.py                   # FastAPI application factory
-│   ├── tests/                        # Pytest suite (23 passing tests)
-│   ├── requirements.txt
-│   └── .env.example
-│
-├── frontend/                         # React 18 + TypeScript + Vite
-│   ├── src/
-│   │   ├── api/                      # Central API client
-│   │   ├── components/               # Header and Navigation
-│   │   ├── pages/                    # Dashboard & persistence tester
-│   │   ├── App.tsx
-│   │   ├── main.tsx
-│   │   └── index.css                 # Clean government environmental design tokens
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── .env.example
-│
-├── data/                             # Local data pipeline storage
-│   ├── database/                     # SQLite database (jalnetra.db)
-│   ├── water_bodies/                 # Spatial vector geometries
-│   ├── scenes/                       # Raw satellite scenes (Sentinel-2)
-│   ├── processed/                    # Spectral indices & masks
-│   ├── tiles/                        # Map slippy tiles cache
-│   ├── cache/                        # Download & calculation cache
-│   ├── exports/                      # Reports & GeoJSON exports
-│   └── manifests/                    # Pipeline run manifests
-│
-├── scripts/
-├── docs/
-├── .gitignore
-├── .env.example
-└── README.md
+data/scenes/{scene_id}/
+├── metadata.json
+└── assets/
+    ├── B02.tif        # Blue (10m)
+    ├── B03.tif        # Green (10m)
+    ├── B04.tif        # Red (10m)
+    ├── B08.tif        # NIR (10m)
+    ├── B11.tif        # SWIR1 (20m)
+    ├── B12.tif        # SWIR2 (20m)
+    ├── SCL.tif        # Scene Classification Layer
+    └── thumbnail.jpg  # True color preview
 ```
 
 ---
 
-## Requirements
+## Configuration
 
-- **Python**: 3.11+ (tested on Python 3.13)
-- **Node.js**: 18+ (tested on Node.js 24)
-- **npm**: 9+
+The initial Sentinel-2 provider uses publicly accessible Sentinel-2 L2A data and **does not require AWS credentials**.
 
----
-
-## Database Migrations (Alembic)
-
-Alembic is the single source of truth for the database schema.
-
-### Applying Migrations
-
-From the `backend` directory:
-
-```bash
-alembic upgrade head
+Configuration keys in `.env` (with sensible defaults in `config.py`):
+```env
+# Sentinel-2 Satellite Acquisition (Phase 3)
+SATELLITE_PROVIDER=earth_search
+SATELLITE_STAC_URL=https://earth-search.aws.element84.com/v1
+SATELLITE_COLLECTION=sentinel-2-c1-l2a
+SATELLITE_REQUEST_TIMEOUT_SECONDS=60.0
+SATELLITE_CACHE_TTL_SECONDS=86400
 ```
-
-### Creating New Migrations
-
-After modifying or adding models in `backend/app/db/models/`:
-
-```bash
-alembic revision --autogenerate -m "describe_changes"
-```
-
-Review the generated script in `backend/alembic/versions/` and apply with `alembic upgrade head`.
-
-### Inspecting the Database
-
-Inspect with SQLite CLI:
-
-```bash
-sqlite3 data/database/jalnetra.db ".tables"
-```
-
-Tables: `water_bodies`, `satellite_scenes`, `satellite_assets`, `analysis_runs`, `cache_entries`, `alembic_version`.
 
 ---
 
 ## API Endpoints
 
-### Health & System
-- `GET /health` & `GET /api/v1/health`: System health and version.
+### Satellite API (`/api/v1/satellite`)
+- `GET /api/v1/satellite/scenes/search?water_body_id={id}&start_date={iso}&end_date={iso}&max_cloud_cover={%}&limit={n}`: Search Sentinel-2 L2A scenes for a water body using STAC with automatic ranking and response caching.
+- `POST /api/v1/satellite/scenes/{external_scene_id}/acquire`: Download selected spectral band assets for a scene to local storage and update database tracking.
+
+### Discovery & Catalog APIs
+- `GET /api/v1/discovery/water-bodies/search`: Search global water bodies from OpenStreetMap.
+- `POST /api/v1/discovery/water-bodies/import`: Import a discovered water body into local SQLite.
+- `GET /api/v1/water-bodies`: List cataloged water bodies.
 - `GET /api/v1/storage/status`: Health check of SQLite database and all data sub-directories.
 - `GET /docs`: Interactive Swagger OpenAPI documentation.
-
-### Water Bodies (`/api/v1/water-bodies`)
-- `POST /api/v1/water-bodies`: Create a new water body record.
-- `GET /api/v1/water-bodies`: List water bodies with filters (`search`, `country`, `source`, `is_active`, `limit`, `offset`).
-- `GET /api/v1/water-bodies/{id}`: Retrieve a specific water body by UUID.
-- `PATCH /api/v1/water-bodies/{id}`: Partially update a water body.
-- `DELETE /api/v1/water-bodies/{id}`: Soft-delete (sets `is_active = false`).
-
----
-
-## Local Storage Abstraction (`LocalStorageService`)
-
-All binary and filesystem operations route through `LocalStorageService` (`backend/app/services/storage_service.py`):
-- **Path Traversal Protection**: Rejects paths attempting to escape `data/` (e.g., `../../etc`).
-- **Atomic File Writes**: Writes data to a temporary file in the destination folder before an atomic replace (`os.fsync` + `shutil.move`).
-- **Checksums**: Computes streaming SHA256 hashes (`calculate_sha256`).
-- **Deterministic Paths**:
-  - Scenes: `data/scenes/{scene_id}/`
-  - Processed outputs: `data/processed/{analysis_run_id}/`
-  - Water bodies: `data/water_bodies/{water_body_id}/`
-  - Cache: `data/cache/{cache_key}/`
 
 ---
 
@@ -226,7 +130,7 @@ npm install
 npm run dev
 ```
 
-Visit [http://localhost:5173](http://localhost:5173).
+Visit [http://localhost:5173](http://localhost:5173). Navigate to the **SENTINEL-2 / SCENES (PHASE 3)** tab.
 
 ---
 
@@ -238,13 +142,14 @@ From `backend` with the virtual environment activated:
 pytest -v
 ```
 
-Runs 23 tests verifying:
-1. Health and configuration defaults.
-2. Local storage directory management, atomic writes, streaming, SHA256 checksums, and path traversal prevention.
-3. Database models, uniqueness constraints, and relationships.
-4. Water body CRUD operations via repositories and service layer.
-5. Live HTTP REST endpoints (`POST`, `GET`, `PATCH`, `DELETE`, `/storage/status`).
-6. Full database session close/reopen cycle confirming persistent SQLite storage across process restarts.
+Runs 41 tests verifying:
+1. STAC Item normalization and canonical band mapping (`B02`, `B03`, `B04`, `B08`, `B11`, `B12`, `SCL`, `thumbnail`).
+2. Deterministic scene ranking (cloud cover, spatial overlap, sensing recency).
+3. File-backed STAC query caching and TTL invalidation.
+4. Streaming asset downloading via atomic temporary files with SHA256 checksums.
+5. Idempotent asset acquisition avoiding duplicate downloads.
+6. HTTP REST API endpoints for scene search and acquisition.
+7. Phase 0, 1, and 2 regressions (water body CRUD, storage status, OpenStreetMap discovery).
 
 ---
 
@@ -252,7 +157,7 @@ Runs 23 tests verifying:
 
 - **Phase 0**: Core Development Foundation (Complete)
 - **Phase 1**: Local Database + Storage Foundation (Complete)
-- **Phase 2**: Global Water-Body Discovery (Next)
-- **Phase 3**: Sentinel-2 Acquisition & Tile Processing
-- **Phase 4**: Spectral Indices & Water Detection
+- **Phase 2**: Global Water-Body Discovery (Complete)
+- **Phase 3**: Sentinel-2 Satellite Acquisition (Complete)
+- **Phase 4**: Spectral Indices & Water Detection (Next)
 - **Phase 5**: Telemetry, Alerting & Reporting
