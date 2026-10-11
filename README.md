@@ -1,16 +1,15 @@
-# JalNetra 2.0 (Phase 4: Interactive GIS Map & Satellite Raster Visualization)
+# JalNetra 2.0 (Phase 5: Cloud Masking & Water Detection)
 
 **JalNetra 2.0** is an open-source, scalable geospatial platform engineered for monitoring water bodies, surface water extent, water quality indices, and hydrological anomalies using satellite observations and remote sensing telemetry.
 
-## Current Development Phase: Phase 4 Complete
+## Current Development Phase: Phase 5 Complete
 
-This repository has completed **Phase 4: Interactive GIS Map & Satellite Imagery Visualization**. It provides an operational GIS interface and safe backend raster alignment pipeline:
-- **Interactive Monitoring Map**: Built using Leaflet and React-Leaflet with OpenStreetMap base tiles, dynamic auto-fitting camera bounds, layer toggles, and symbology legend.
-- **Water Body Vector Layer**: GeoJSON polygon/centroid visualization of all tracked water bodies with click-to-inspect popups and zooming.
-- **Scene Footprint Layer**: Visualizes Sentinel-2 scene spatial coverage boundaries distinct from water body geometries.
-- **On-Demand Sentinel-2 RGB Rendering**: Aligns B04 (Red), B03 (Green), and B02 (Blue) GeoTIFFs, reprojects native UTM coordinates to EPSG:4326 (WGS84) via Rasterio `WarpedVRT`, handles NoData/invalid masks transparently, and applies 2nd-to-98th percentile contrast stretching.
-- **Safe Raster Caching & Serving**: Saves optimized display products to `data/processed/map/{scene_id}/rgb.png` with metadata JSON. Cached products are instantly reused on subsequent requests. Original GeoTIFF assets are never modified.
-- **Security & Path Traversal Prevention**: Only serves registered scenes through database UUID lookups; rejects arbitrary filesystem path requests.
+This repository has completed **Phase 5: Cloud Masking & Water Detection**. It provides an operational pixel-level preprocessing pipeline:
+- **SCL Cloud and Shadow Masking**: Extracts clear observations using Sentinel-2 Scene Classification Layer (`SCL.tif`). Filters out cloud shadows (3), medium-probability clouds (8), high-probability clouds (9), thin cirrus (10), snow/ice (11), and NoData/defective pixels (0, 1), producing a georeferenced binary valid mask (`cloud_mask.tif`).
+- **Deterministic Spectral Water Detection**: Aligns Sentinel-2 Green (`B03.tif`) and NIR (`B08.tif`) on the 20m SCL reference grid via Rasterio `WarpedVRT`. Evaluates normalized green-to-NIR contrast `(B03 - B08)/(B03 + B08) > 0.0` strictly over valid clear-sky pixels. Outputs a georeferenced binary water mask (`water_mask.tif`).
+- **Processing Metrics & Metadata**: Persists pixel counts, valid observation percentages, and surface water extent in `data/processed/{scene_id}/processing_metadata.json`.
+- **Integrated Interactive Map Overlays**: Renders semi-transparent amber cloud/shadow and cyan water detection overlays directly onto the Leaflet monitoring map.
+- **Scientific Boundary Integrity**: Strictly limits segmentation to surface water identification; does NOT compute water quality, pollution indices (NDTI, NDCI), or ML anomalies.
 
 ---
 
@@ -86,6 +85,14 @@ SATELLITE_CACHE_TTL_SECONDS=86400
 ```
 
 ---
+
+### Preprocessing & Water Detection APIs (`/api/v1/processing`)
+- `POST /api/v1/processing/scenes/{scene_id}`: Runs SCL cloud/shadow filtering and deterministic spectral water segmentation on a scene, saving `cloud_mask.tif`, `water_mask.tif`, `processing_metadata.json`, and overlay PNGs.
+- `GET /api/v1/processing/scenes/{scene_id}`: Returns processing status, cloud/shadow coverage percentage, and detected water extent.
+- `GET /api/v1/processing/scenes/{scene_id}/cloud-mask`: Returns geographic bounds (EPSG:4326) and image overlay URL for the cloud/shadow mask.
+- `GET /api/v1/processing/scenes/{scene_id}/cloud-mask/image`: Streams the rendered semi-transparent amber cloud/shadow PNG overlay.
+- `GET /api/v1/processing/scenes/{scene_id}/water-mask`: Returns geographic bounds (EPSG:4326) and image overlay URL for the detected water mask.
+- `GET /api/v1/processing/scenes/{scene_id}/water-mask/image`: Streams the rendered semi-transparent cyan detected water PNG overlay.
 
 ### Interactive Map & Raster APIs (`/api/v1/map`)
 - `GET /api/v1/map/water-bodies/geojson`: Returns GeoJSON FeatureCollection of all tracked water bodies with polygon geometry, centroids, and attributes.

@@ -373,3 +373,90 @@ export async function getSceneRGBVisualization(sceneId: string, forceRegenerate 
 export function getSceneRGBImageUrl(sceneId: string): string {
   return `${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/rgb/image`;
 }
+
+// Processing API (Phase 5)
+export interface CloudMaskMetadata {
+  source_layer: string;
+  masked_classes: number[];
+  total_pixels: number;
+  valid_pixels: number;
+  cloud_shadow_pixels: number;
+  valid_pixel_percentage: number;
+  cloud_shadow_percentage: number;
+}
+
+export interface WaterDetectionMetadata {
+  method: string;
+  threshold: number;
+  source_bands: string[];
+  total_pixels: number;
+  valid_pixels_evaluated: number;
+  water_pixels: number;
+  water_extent_percentage_of_valid: number;
+  water_extent_percentage_of_total: number;
+  estimated_water_area_sq_km?: number | null;
+}
+
+export interface ProcessingStatusResponse {
+  scene_id: string;
+  external_scene_id: string;
+  status: 'ready' | 'unprocessed' | 'missing_assets';
+  cloud_mask_available: boolean;
+  water_mask_available: boolean;
+  cloud_mask?: CloudMaskMetadata | null;
+  water_detection?: WaterDetectionMetadata | null;
+  source_bands_present: string[];
+  missing_required_bands: string[];
+  created_at?: string | null;
+  cloud_mask_image_url?: string | null;
+  water_mask_image_url?: string | null;
+}
+
+export interface MaskVisualizationResponse {
+  scene_id: string;
+  mask_type: string;
+  crs: string;
+  bounds: MapGeoBounds;
+  width: number;
+  height: number;
+  image_url: string;
+  cached: boolean;
+  description: string;
+}
+
+export async function getProcessingStatus(sceneId: string): Promise<ProcessingStatusResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<ProcessingStatusResponse>(response);
+}
+
+export async function runSceneProcessing(sceneId: string, threshold = 0.0, force = false): Promise<ProcessingStatusResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}?threshold=${threshold}&force_recompute=${force}`, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<ProcessingStatusResponse>(response);
+}
+
+export async function getCloudMaskVisualization(sceneId: string): Promise<MaskVisualizationResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/cloud-mask`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<MaskVisualizationResponse>(response);
+}
+
+export async function getWaterMaskVisualization(sceneId: string): Promise<MaskVisualizationResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/water-mask`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<MaskVisualizationResponse>(response);
+}
+
+export function getCloudMaskImageUrl(sceneId: string): string {
+  return `${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/cloud-mask/image`;
+}
+
+export function getWaterMaskImageUrl(sceneId: string): string {
+  return `${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/water-mask/image`;
+}

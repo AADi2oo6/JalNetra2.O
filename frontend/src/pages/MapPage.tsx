@@ -13,9 +13,17 @@ import {
   getSceneRasterMetadata,
   getSceneRGBVisualization,
   getSceneRGBImageUrl,
+  getProcessingStatus,
+  runSceneProcessing,
+  getCloudMaskVisualization,
+  getWaterMaskVisualization,
+  getCloudMaskImageUrl,
+  getWaterMaskImageUrl,
   MapSceneItem,
   SceneRasterMetadata,
   RGBVisualizationData,
+  ProcessingStatusResponse,
+  MaskVisualizationResponse,
 } from '../api/client';
 
 // Component to dynamically fit map bounds
@@ -47,17 +55,28 @@ export const MapPage: React.FC = () => {
 
   // RGB Visualization
   const [rgbData, setRgbData] = useState<RGBVisualizationData | null>(null);
-  const [isRenderingRgb, setIsRenderingRgb] = useState(false);
-  const [rgbError, setRgbError] = useState<string | null>(null);
 
-  // Layer Controls
+  // Processing & Mask Overlays (Phase 5)
+  const [processingStatus, setProcessingStatus] = useState<ProcessingStatusResponse | null>(null);
+  const [cloudMaskVis, setCloudMaskVis] = useState<MaskVisualizationResponse | null>(null);
+  const [waterMaskVis, setWaterMaskVis] = useState<MaskVisualizationResponse | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingError, setProcessingError] = useState<string | null>(null);
+
+  // Layer Controls (Ordered logically: Base -> Vector -> Footprint -> RGB -> Cloud Mask -> Water Mask)
   const [showBaseMap, setShowBaseMap] = useState(true);
   const [showWaterBodies, setShowWaterBodies] = useState(true);
   const [showSceneFootprint, setShowSceneFootprint] = useState(true);
   const [showRgbImagery, setShowRgbImagery] = useState(true);
-  const [rasterOpacity, setRasterOpacity] = useState(0.85);
+  const [showCloudMask, setShowCloudMask] = useState(false);
+  const [showWaterMask, setShowWaterMask] = useState(true);
 
-  // Camera Bounds
+  // Layer Opacities
+  const [rasterOpacity, setRasterOpacity] = useState(0.85);
+  const [cloudMaskOpacity, setCloudMaskOpacity] = useState(0.70);
+  const [waterMaskOpacity, setWaterMaskOpacity] = useState(0.80);
+
+  // Camera Bounds & Page Errors
   const [targetBounds, setTargetBounds] = useState<L.LatLngBoundsExpression | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -86,7 +105,10 @@ export const MapPage: React.FC = () => {
     setSelectedSceneItem(null);
     setSceneMetadata(null);
     setRgbData(null);
-    setRgbError(null);
+    setProcessingStatus(null);
+    setCloudMaskVis(null);
+    setWaterMaskVis(null);
+    setProcessingError(null);
 
     // Find props if not provided
     const matchedFeature = geoJsonData?.features?.find((f: any) => f.properties.id === wbId);
@@ -123,7 +145,10 @@ export const MapPage: React.FC = () => {
     setSelectedSceneId(sceneItem.scene_id);
     setSelectedSceneItem(sceneItem);
     setRgbData(null);
-    setRgbError(null);
+    setProcessingStatus(null);
+    setCloudMaskVis(null);
+    setWaterMaskVis(null);
+    setProcessingError(null);
 
     // Zoom to scene footprint if available
     if (sceneItem.bbox) {
@@ -146,11 +171,12 @@ export const MapPage: React.FC = () => {
     } catch (err: any) {
       console.warn('Failed to load scene raster metadata:', err);
     }
+
+    // Fetch preprocessing status (Phase 5)
+    loadProcessingStatus(sceneItem.scene_id);
   };
 
   const loadRGBVisualization = async (sceneId: string, force = false) => {
-    setIsRenderingRgb(true);
-    setRgbError(null);
     try {
       const data = await getSceneRGBVisualization(sceneId, force);
       setRgbData(data);
@@ -162,17 +188,70 @@ export const MapPage: React.FC = () => {
         ]);
       }
     } catch (err: any) {
-      setRgbError(err.message || 'Failed to render RGB imagery');
-    } finally {
-      setIsRenderingRgb(false);
+      console.warn('Failed to render RGB imagery:', err);
     }
   };
 
-  // Convert GeoBounds to Leaflet LatLngBoundsExpression
+  const loadProcessingStatus = async (sceneId: string) => {
+    try {
+      const status = await getProcessingStatus(sceneId);
+      setProcessingStatus(status);
+      if (status.cloud_mask_available && status.water_mask_available) {
+        // Load mask visualizations
+        loadMaskOverlays(sceneId);
+      }
+    } catch (err) {
+      console.warn('Failed to check processing status:', err);
+    }
+  };
+
+  const loadMaskOverlays = async (sceneId: string) => {
+    try {
+      const [cm, wm] = await Promise.all([
+        getCloudMaskVisualization(sceneId),
+        getWaterMaskVisualization(sceneId),
+      ]);
+      setCloudMaskVis(cm);
+      setWaterMaskVis(wm);
+    } catch (err: any) {
+      console.warn('Failed to load mask overlay metadata:', err);
+    }
+  };
+
+  const handleRunProcessing = async (force = false) => {
+    if (!selectedSceneItem) return;
+    setIsProcessing(true);
+    setProcessingError(null);
+    try {
+      const status = await runSceneProcessing(selectedSceneItem.scene_id, 0.0, force);
+      setProcessingStatus(status);
+      await loadMaskOverlays(selectedSceneItem.scene_id);
+    } catch (err: any) {
+      setProcessingError(err.message || 'Processing pipeline failed');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Bounds for overlays
   const rasterOverlayBounds: L.LatLngBoundsExpression | null = rgbData?.bounds
     ? [
         [rgbData.bounds.south, rgbData.bounds.west],
         [rgbData.bounds.north, rgbData.bounds.east],
+      ]
+    : null;
+
+  const cloudMaskBounds: L.LatLngBoundsExpression | null = cloudMaskVis?.bounds
+    ? [
+        [cloudMaskVis.bounds.south, cloudMaskVis.bounds.west],
+        [cloudMaskVis.bounds.north, cloudMaskVis.bounds.east],
+      ]
+    : null;
+
+  const waterMaskBounds: L.LatLngBoundsExpression | null = waterMaskVis?.bounds
+    ? [
+        [waterMaskVis.bounds.south, waterMaskVis.bounds.west],
+        [waterMaskVis.bounds.north, waterMaskVis.bounds.east],
       ]
     : null;
 
@@ -181,9 +260,9 @@ export const MapPage: React.FC = () => {
       {/* Top Banner */}
       <div style={styles.headerBanner}>
         <div>
-          <h2 style={styles.headerTitle}>OPERATIONAL MONITORING MAP & SATELLITE VISUALIZATION</h2>
+          <h2 style={styles.headerTitle}>OPERATIONAL MONITORING MAP & PREPROCESSING WORKSTATION</h2>
           <p style={styles.headerSubtitle}>
-            Interactive GIS viewer displaying tracked water bodies, Sentinel-2 footprints, and aligned L2A True-Color (B04/B03/B02) rasters.
+            Interactive GIS workstation: view True-Color Sentinel-2 rasters, SCL cloud/shadow masks, and deterministic spectral water segmentation.
           </p>
         </div>
         <div style={styles.statusBadge}>
@@ -198,9 +277,11 @@ export const MapPage: React.FC = () => {
       <div style={styles.workspace}>
         {/* Left Side: Controls & Selector Panel */}
         <div style={styles.sidebar}>
-          {/* Layer Visibility Control */}
+          {/* Layer Visibility Controls */}
           <div style={styles.panelCard}>
             <div style={styles.panelTitle}>LAYER CONTROLS</div>
+
+            {/* 1. Base Map */}
             <div style={styles.layerRow}>
               <label style={styles.layerLabel}>
                 <input
@@ -208,9 +289,11 @@ export const MapPage: React.FC = () => {
                   checked={showBaseMap}
                   onChange={(e) => setShowBaseMap(e.target.checked)}
                 />
-                <span style={styles.layerText}>Base Map (OpenStreetMap)</span>
+                <span style={styles.layerText}>1. Base Map (OpenStreetMap)</span>
               </label>
             </div>
+
+            {/* 2. Water Bodies */}
             <div style={styles.layerRow}>
               <label style={styles.layerLabel}>
                 <input
@@ -218,9 +301,11 @@ export const MapPage: React.FC = () => {
                   checked={showWaterBodies}
                   onChange={(e) => setShowWaterBodies(e.target.checked)}
                 />
-                <span style={styles.layerText}>Water Body Boundaries</span>
+                <span style={styles.layerText}>2. Water Body Boundaries</span>
               </label>
             </div>
+
+            {/* 3. Scene Footprint */}
             <div style={styles.layerRow}>
               <label style={styles.layerLabel}>
                 <input
@@ -228,9 +313,11 @@ export const MapPage: React.FC = () => {
                   checked={showSceneFootprint}
                   onChange={(e) => setShowSceneFootprint(e.target.checked)}
                 />
-                <span style={styles.layerText}>Scene Footprint</span>
+                <span style={styles.layerText}>3. Scene Footprint</span>
               </label>
             </div>
+
+            {/* 4. Sentinel-2 RGB */}
             <div style={styles.layerRow}>
               <label style={styles.layerLabel}>
                 <input
@@ -238,15 +325,13 @@ export const MapPage: React.FC = () => {
                   checked={showRgbImagery}
                   onChange={(e) => setShowRgbImagery(e.target.checked)}
                 />
-                <span style={styles.layerText}>Sentinel-2 RGB Overlay</span>
+                <span style={styles.layerText}>4. Sentinel-2 RGB Overlay</span>
               </label>
             </div>
-
-            {/* Opacity Slider */}
             {showRgbImagery && (
               <div style={styles.sliderContainer}>
                 <div style={styles.sliderHeader}>
-                  <span>Raster Opacity</span>
+                  <span>RGB Opacity</span>
                   <span style={styles.sliderValue}>{Math.round(rasterOpacity * 100)}%</span>
                 </div>
                 <input
@@ -256,6 +341,70 @@ export const MapPage: React.FC = () => {
                   step="0.05"
                   value={rasterOpacity}
                   onChange={(e) => setRasterOpacity(parseFloat(e.target.value))}
+                  style={styles.slider}
+                />
+              </div>
+            )}
+
+            {/* 5. Cloud/Shadow Mask (Phase 5) */}
+            <div style={styles.layerRow}>
+              <label style={styles.layerLabel}>
+                <input
+                  type="checkbox"
+                  checked={showCloudMask}
+                  disabled={!cloudMaskVis}
+                  onChange={(e) => setShowCloudMask(e.target.checked)}
+                />
+                <span style={{ ...styles.layerText, color: cloudMaskVis ? 'var(--color-text-primary)' : 'var(--color-text-muted)' }}>
+                  5. Cloud & Shadow Mask {cloudMaskVis ? '' : '(Not generated)'}
+                </span>
+              </label>
+            </div>
+            {showCloudMask && cloudMaskVis && (
+              <div style={styles.sliderContainer}>
+                <div style={styles.sliderHeader}>
+                  <span>Cloud Mask Opacity</span>
+                  <span style={styles.sliderValue}>{Math.round(cloudMaskOpacity * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.0"
+                  step="0.05"
+                  value={cloudMaskOpacity}
+                  onChange={(e) => setCloudMaskOpacity(parseFloat(e.target.value))}
+                  style={styles.slider}
+                />
+              </div>
+            )}
+
+            {/* 6. Detected Water Mask (Phase 5) */}
+            <div style={styles.layerRow}>
+              <label style={styles.layerLabel}>
+                <input
+                  type="checkbox"
+                  checked={showWaterMask}
+                  disabled={!waterMaskVis}
+                  onChange={(e) => setShowWaterMask(e.target.checked)}
+                />
+                <span style={{ ...styles.layerText, color: waterMaskVis ? 'var(--color-text-primary)' : 'var(--color-text-muted)' }}>
+                  6. Detected Water Extent {waterMaskVis ? '' : '(Not generated)'}
+                </span>
+              </label>
+            </div>
+            {showWaterMask && waterMaskVis && (
+              <div style={styles.sliderContainer}>
+                <div style={styles.sliderHeader}>
+                  <span>Water Mask Opacity</span>
+                  <span style={styles.sliderValue}>{Math.round(waterMaskOpacity * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.0"
+                  step="0.05"
+                  value={waterMaskOpacity}
+                  onChange={(e) => setWaterMaskOpacity(parseFloat(e.target.value))}
                   style={styles.slider}
                 />
               </div>
@@ -349,30 +498,43 @@ export const MapPage: React.FC = () => {
             )}
           </div>
 
-          {/* Raster Processing Actions */}
+          {/* Phase 5 Analysis Controls */}
           {selectedSceneItem && (
             <div style={styles.panelCard}>
-              <div style={styles.panelTitle}>RASTER VISUALIZATION (RGB)</div>
-              {rgbError && <div style={styles.errorSmall}>{rgbError}</div>}
+              <div style={styles.panelTitle}>SCENE ANALYSIS (PHASE 5)</div>
+              {processingError && <div style={styles.errorSmall}>{processingError}</div>}
 
-              {selectedSceneItem.has_rgb ? (
-                <div>
-                  <button
-                    style={styles.renderBtn}
-                    onClick={() => loadRGBVisualization(selectedSceneItem.scene_id, true)}
-                    disabled={isRenderingRgb}
-                  >
-                    {isRenderingRgb ? 'REPROJECTING & RENDERING...' : rgbData ? 'RE-GENERATE RGB LAYER' : 'LOAD & DISPLAY RGB'}
-                  </button>
-                  <p style={styles.disclaimerText}>
-                    * Aligns B04 (Red), B03 (Green), B02 (Blue), reprojects to EPSG:4326 and applies percentile contrast stretch.
-                  </p>
+              {/* Status pills */}
+              <div style={styles.analysisStatusRow}>
+                <div style={styles.statusPill}>
+                  <span style={styles.statusPillLabel}>Cloud Mask:</span>
+                  <span style={processingStatus?.cloud_mask_available ? styles.pillReady : styles.pillPending}>
+                    {processingStatus?.cloud_mask_available ? 'Ready' : 'Pending'}
+                  </span>
                 </div>
-              ) : (
-                <div style={styles.emptyNote}>
-                  Scene missing required RGB bands (B04, B03, B02). Please download them in the Satellite tab.
+                <div style={styles.statusPill}>
+                  <span style={styles.statusPillLabel}>Water Mask:</span>
+                  <span style={processingStatus?.water_mask_available ? styles.pillReady : styles.pillPending}>
+                    {processingStatus?.water_mask_available ? 'Ready' : 'Pending'}
+                  </span>
                 </div>
-              )}
+              </div>
+
+              {/* Action Button */}
+              <button
+                style={styles.processBtn}
+                onClick={() => handleRunProcessing(true)}
+                disabled={isProcessing}
+              >
+                {isProcessing
+                  ? 'RUNNING CLOUD & WATER ANALYSIS...'
+                  : processingStatus?.status === 'ready'
+                  ? 'RE-RUN ANALYSIS'
+                  : 'RUN ANALYSIS'}
+              </button>
+              <p style={styles.disclaimerText}>
+                * Preprocessing: Filters clouds/shadows via SCL and performs deterministic Green/NIR spectral water segmentation.
+              </p>
             </div>
           )}
         </div>
@@ -388,7 +550,7 @@ export const MapPage: React.FC = () => {
             {/* Auto camera bounds listener */}
             <FitBoundsHelper bounds={targetBounds} />
 
-            {/* Base Tile Layer */}
+            {/* 1. Base Tile Layer */}
             {showBaseMap && (
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -397,7 +559,7 @@ export const MapPage: React.FC = () => {
               />
             )}
 
-            {/* Vector Water Bodies GeoJSON Layer */}
+            {/* 2. Vector Water Bodies GeoJSON Layer */}
             {showWaterBodies && geoJsonData && (
               <GeoJSON
                 data={geoJsonData}
@@ -424,7 +586,7 @@ export const MapPage: React.FC = () => {
               />
             )}
 
-            {/* Satellite Scene Footprint Layer */}
+            {/* 3. Satellite Scene Footprint Layer */}
             {showSceneFootprint && selectedSceneItem?.footprint && (
               <GeoJSON
                 key={`footprint-${selectedSceneItem.scene_id}`}
@@ -439,7 +601,7 @@ export const MapPage: React.FC = () => {
               />
             )}
 
-            {/* Actual Sentinel-2 Reprojected RGB ImageOverlay Layer */}
+            {/* 4. Actual Sentinel-2 Reprojected RGB ImageOverlay Layer */}
             {showRgbImagery && rgbData && rasterOverlayBounds && (
               <ImageOverlay
                 key={`rgb-overlay-${rgbData.scene_id}`}
@@ -448,11 +610,31 @@ export const MapPage: React.FC = () => {
                 opacity={rasterOpacity}
               />
             )}
+
+            {/* 5. Cloud/Shadow Mask Overlay (Phase 5) */}
+            {showCloudMask && cloudMaskVis && cloudMaskBounds && (
+              <ImageOverlay
+                key={`cloud-mask-overlay-${cloudMaskVis.scene_id}`}
+                url={getCloudMaskImageUrl(cloudMaskVis.scene_id)}
+                bounds={cloudMaskBounds}
+                opacity={cloudMaskOpacity}
+              />
+            )}
+
+            {/* 6. Detected Water Extent Overlay (Phase 5) */}
+            {showWaterMask && waterMaskVis && waterMaskBounds && (
+              <ImageOverlay
+                key={`water-mask-overlay-${waterMaskVis.scene_id}`}
+                url={getWaterMaskImageUrl(waterMaskVis.scene_id)}
+                bounds={waterMaskBounds}
+                opacity={waterMaskOpacity}
+              />
+            )}
           </MapContainer>
 
           {/* Floating Map Legend */}
           <div style={styles.mapLegend}>
-            <div style={styles.legendTitle}>MAP SYMBOLOGY</div>
+            <div style={styles.legendTitle}>MAP SYMBOLOGY & LAYERS</div>
             <div style={styles.legendItem}>
               <span style={{ ...styles.legendBox, backgroundColor: 'rgba(34, 197, 94, 0.3)', borderColor: '#15803d' }}></span>
               <span>Water Body Boundary</span>
@@ -469,14 +651,24 @@ export const MapPage: React.FC = () => {
               <span style={{ ...styles.legendBox, backgroundColor: '#38bdf8', borderColor: '#0284c7' }}></span>
               <span>Sentinel-2 L2A RGB Raster</span>
             </div>
+            <div style={styles.legendItem}>
+              <span style={{ ...styles.legendBox, backgroundColor: '#f59e0b', borderColor: '#d97706' }}></span>
+              <span>SCL Cloud / Shadow Mask</span>
+            </div>
+            <div style={styles.legendItem}>
+              <span style={{ ...styles.legendBox, backgroundColor: '#0ea5e9', borderColor: '#0284c7' }}></span>
+              <span>Detected Surface Water</span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Bottom Panel: Selected Scene & Raster Details */}
-      {sceneMetadata && (
-        <div style={styles.bottomPanel}>
-          <div style={styles.panelTitle}>RASTER METADATA & SENSING ATTRIBUTES</div>
+      {/* Bottom Panel: Scene Raster Metadata & Processing Metrics */}
+      <div style={styles.bottomPanel}>
+        <div style={styles.panelTitle}>
+          SCENE METADATA & RASTER ATTRIBUTES
+        </div>
+        {sceneMetadata ? (
           <div style={styles.metaGrid}>
             <div style={styles.metaCell}>
               <span style={styles.metaCellKey}>SCENE IDENTIFIER:</span>
@@ -492,11 +684,9 @@ export const MapPage: React.FC = () => {
             </div>
             <div style={styles.metaCell}>
               <span style={styles.metaCellKey}>CLOUD COVER:</span>
-              <span style={styles.metaCellVal}>{sceneMetadata.cloud_cover_percent != null ? `${sceneMetadata.cloud_cover_percent.toFixed(2)}%` : 'N/A'}</span>
-            </div>
-            <div style={styles.metaCell}>
-              <span style={styles.metaCellKey}>VISUALIZATION PRODUCT:</span>
-              <span style={styles.metaCellVal}>True-Color RGB (B04/B03/B02) 2-98% Percentile Stretch</span>
+              <span style={styles.metaCellVal}>
+                {sceneMetadata.cloud_cover_percent != null ? `${sceneMetadata.cloud_cover_percent.toFixed(2)}%` : 'N/A'}
+              </span>
             </div>
             <div style={styles.metaCell}>
               <span style={styles.metaCellKey}>GEOGRAPHIC BOUNDS (W, S, E, N):</span>
@@ -507,8 +697,62 @@ export const MapPage: React.FC = () => {
               </span>
             </div>
           </div>
-        </div>
-      )}
+        ) : (
+          <div style={styles.emptyNote}>Select a scene above to inspect metadata.</div>
+        )}
+
+        {/* Phase 5 Analysis Metrics */}
+        {processingStatus?.status === 'ready' && processingStatus.water_detection && (
+          <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
+            <div style={styles.panelTitle}>
+              PHASE 5 ANALYSIS METRICS & SPECTRAL SEGMENTATION RESULTS
+            </div>
+            <div style={styles.metaGrid}>
+              <div style={styles.metaCell}>
+                <span style={styles.metaCellKey}>WATER SEGMENTATION METHOD:</span>
+                <span style={styles.metaCellVal}>{processingStatus.water_detection.method}</span>
+              </div>
+              <div style={styles.metaCell}>
+                <span style={styles.metaCellKey}>DETECTION THRESHOLD:</span>
+                <span style={styles.metaCellVal}>Threshold &gt; {processingStatus.water_detection.threshold}</span>
+              </div>
+              <div style={styles.metaCell}>
+                <span style={styles.metaCellKey}>CLOUD / SHADOW COVER:</span>
+                <span style={styles.metaCellVal}>
+                  {processingStatus.cloud_mask?.cloud_shadow_percentage != null
+                    ? `${processingStatus.cloud_mask.cloud_shadow_percentage}% (${processingStatus.cloud_mask.cloud_shadow_pixels.toLocaleString()} px)`
+                    : 'N/A'}
+                </span>
+              </div>
+              <div style={styles.metaCell}>
+                <span style={styles.metaCellKey}>VALID OBSERVATIONS:</span>
+                <span style={styles.metaCellVal}>
+                  {processingStatus.cloud_mask?.valid_pixel_percentage != null
+                    ? `${processingStatus.cloud_mask.valid_pixel_percentage}% (${processingStatus.cloud_mask.valid_pixels.toLocaleString()} px)`
+                    : 'N/A'}
+                </span>
+              </div>
+              <div style={styles.metaCell}>
+                <span style={styles.metaCellKey}>DETECTED WATER EXTENT:</span>
+                <span style={{ ...styles.metaCellVal, color: 'var(--color-primary)' }}>
+                  {processingStatus.water_detection.water_extent_percentage_of_valid}% of valid pixels
+                </span>
+              </div>
+              <div style={styles.metaCell}>
+                <span style={styles.metaCellKey}>ESTIMATED WATER AREA:</span>
+                <span style={{ ...styles.metaCellVal, color: 'var(--color-primary)' }}>
+                  {processingStatus.water_detection.estimated_water_area_sq_km != null
+                    ? `${processingStatus.water_detection.estimated_water_area_sq_km.toLocaleString()} km²`
+                    : 'N/A'}
+                </span>
+              </div>
+            </div>
+            <p style={styles.boundaryNote}>
+              * <b>Scientific Boundary Notice:</b> This is an initial deterministic spectral segmentation product that identifies surface water pixels. It does not measure water quality, turbidity, chlorophyll concentration, or pollution (which belong to later phases).
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -574,7 +818,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: '1rem',
-    maxHeight: '680px',
+    maxHeight: '740px',
     overflowY: 'auto',
   },
   panelCard: {
@@ -603,19 +847,18 @@ const styles: Record<string, React.CSSProperties> = {
   layerText: {
     fontSize: '0.8rem',
     fontWeight: 500,
-    color: 'var(--color-text-primary)',
   },
   sliderContainer: {
-    marginTop: '0.75rem',
-    paddingTop: '0.75rem',
-    borderTop: '1px dashed var(--border-color)',
+    marginTop: '0.4rem',
+    marginBottom: '0.6rem',
+    paddingLeft: '1.25rem',
   },
   sliderHeader: {
     display: 'flex',
     justifyContent: 'space-between',
-    fontSize: '0.75rem',
+    fontSize: '0.7rem',
     fontWeight: 600,
-    marginBottom: '0.25rem',
+    marginBottom: '0.2rem',
     color: 'var(--color-text-secondary)',
   },
   sliderValue: {
@@ -666,7 +909,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: '0.5rem',
-    maxHeight: '180px',
+    maxHeight: '170px',
     overflowY: 'auto',
   },
   sceneCard: {
@@ -713,9 +956,42 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#b45309',
     padding: '0.1rem 0.35rem',
   },
-  renderBtn: {
+  analysisStatusRow: {
+    display: 'flex',
+    gap: '0.5rem',
+    marginBottom: '0.75rem',
+  },
+  statusPill: {
+    flex: 1,
+    padding: '0.4rem',
+    backgroundColor: 'var(--color-surface-subtle)',
+    border: '1px solid var(--border-color)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  statusPillLabel: {
+    fontSize: '0.7rem',
+    fontWeight: 600,
+    color: 'var(--color-text-secondary)',
+  },
+  pillReady: {
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    color: '#15803d',
+    backgroundColor: '#dcfce7',
+    padding: '0.1rem 0.3rem',
+  },
+  pillPending: {
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    color: '#b45309',
+    backgroundColor: '#fef3c7',
+    padding: '0.1rem 0.3rem',
+  },
+  processBtn: {
     width: '100%',
-    padding: '0.5rem',
+    padding: '0.55rem',
     backgroundColor: 'var(--color-primary)',
     color: '#ffffff',
     border: 'none',
@@ -793,7 +1069,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   metaGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
     gap: '0.75rem',
   },
   metaCell: {
@@ -816,5 +1092,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     color: 'var(--color-text-primary)',
     wordBreak: 'break-all',
+  },
+  boundaryNote: {
+    marginTop: '0.75rem',
+    fontSize: '0.72rem',
+    color: 'var(--color-text-secondary)',
+    lineHeight: 1.4,
   },
 };

@@ -5,6 +5,7 @@ from app.api.v1.storage import router as storage_router
 from app.api.v1.discovery import router as discovery_router
 from app.api.v1.satellite import router as satellite_router
 from app.api.v1.map import router as map_router
+from app.api.v1.processing import router as processing_router
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(health_router)
@@ -13,3 +14,4 @@ api_v1_router.include_router(storage_router)
 api_v1_router.include_router(discovery_router)
 api_v1_router.include_router(satellite_router)
 api_v1_router.include_router(map_router)
+api_v1_router.include_router(processing_router)
