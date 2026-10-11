@@ -2,7 +2,7 @@ import pytest
 from starlette.testclient import TestClient
 from app.core.config import settings
 from app.core.paths import get_repo_root, resolve_path, ensure_data_directories
-from app.db.database import init_db, SessionLocal, engine
+from app.db.database import SessionLocal
 from sqlalchemy import text
 
 
@@ -34,9 +34,8 @@ def test_paths_utility(tmp_path):
         assert d.is_dir()
 
 
-def test_database_initialization():
-    """Verify database engine connects and initializes tables cleanly."""
-    init_db()
+def test_database_connection():
+    """Verify database engine connects cleanly and executes query."""
     with SessionLocal() as session:
         result = session.execute(text("SELECT 1")).scalar()
         assert result == 1

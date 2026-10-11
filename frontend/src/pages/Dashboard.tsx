@@ -1,5 +1,12 @@
-import React from 'react';
-import { HealthStatus } from '../api';
+import React, { useEffect, useState } from 'react';
+import {
+  HealthStatus,
+  StorageStatus,
+  WaterBody,
+  getStorageStatus,
+  listWaterBodies,
+  createWaterBody,
+} from '../api';
 
 interface DashboardProps {
   status: 'connected' | 'offline' | 'checking';
@@ -14,13 +21,63 @@ export const Dashboard: React.FC<DashboardProps> = ({
   error,
   onRefresh,
 }) => {
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [waterBodies, setWaterBodies] = useState<WaterBody[]>([]);
+  const [wbCount, setWbCount] = useState<number>(0);
+  const [newWbName, setNewWbName] = useState<string>('');
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  const loadData = async () => {
+    if (status !== 'connected') return;
+    try {
+      const s = await getStorageStatus();
+      setStorageStatus(s);
+      const wbs = await listWaterBodies(5, 0);
+      setWaterBodies(wbs.items);
+      setWbCount(wbs.total);
+    } catch {
+      // Ignored if offline
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, [status]);
+
+  const handleCreateTestBody = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newWbName.trim()) return;
+    setIsSubmitting(true);
+    setActionMsg(null);
+    try {
+      const created = await createWaterBody({
+        name: newWbName.trim(),
+        country: 'India',
+        source: 'manual',
+        source_id: `test-${Date.now()}`,
+      });
+      setActionMsg(`Created water body: ${created.name} (ID: ${created.id.substring(0, 8)}...)`);
+      setNewWbName('');
+      await loadData();
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setActionMsg(`Error: ${err.message}`);
+      } else {
+        setActionMsg('Failed to create water body');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div style={styles.container}>
       {/* Overview Status Banner */}
       <section style={styles.sectionCard}>
         <div style={styles.sectionHeader}>
-          <h2 style={styles.sectionTitle}>SYSTEM STATUS & CONNECTIVITY</h2>
-          <button style={styles.refreshBtn} onClick={onRefresh}>
+          <h2 style={styles.sectionTitle}>SYSTEM STATUS & STORAGE PERSISTENCE</h2>
+          <button style={styles.refreshBtn} onClick={() => { onRefresh(); loadData(); }}>
             CHECK STATUS
           </button>
         </div>
@@ -49,29 +106,88 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           <div style={styles.metricCard}>
-            <div style={styles.metricLabel}>LOCAL STORAGE DATABASE</div>
-            <div style={styles.metricValue}>SQLITE 3</div>
+            <div style={styles.metricLabel}>SQLITE 3 DATABASE (ALEMBIC)</div>
+            <div style={styles.metricValue}>
+              {storageStatus?.database?.status === 'ok' ? 'HEALTHY (OK)' : 'OFFLINE'}
+            </div>
             <div style={styles.metricDetail}>data/database/jalnetra.db</div>
           </div>
 
           <div style={styles.metricCard}>
-            <div style={styles.metricLabel}>CURRENT MILESTONE</div>
-            <div style={styles.metricValue}>PHASE 0</div>
-            <div style={styles.metricDetail}>Core Development Foundation Established</div>
+            <div style={styles.metricLabel}>CATALOG WATER BODIES</div>
+            <div style={styles.metricValue}>{wbCount} RECORD(S)</div>
+            <div style={styles.metricDetail}>Phase 1 Persistent Storage</div>
           </div>
         </div>
       </section>
 
+      {/* Phase 1 Developer Persistence Controls */}
+      {status === 'connected' && (
+        <section style={styles.sectionCard}>
+          <div style={styles.sectionHeader}>
+            <h2 style={styles.sectionTitle}>PHASE 1 PERSISTENCE TESTER</h2>
+          </div>
+          <p style={styles.description}>
+            Add a test water body record into the local SQLite database to verify API routing, Pydantic validation, repository transactions, and persistence.
+          </p>
+
+          <form onSubmit={handleCreateTestBody} style={styles.formRow}>
+            <input
+              type="text"
+              placeholder="Water Body Name (e.g. Sambhar Salt Lake)"
+              value={newWbName}
+              onChange={(e) => setNewWbName(e.target.value)}
+              style={styles.input}
+              disabled={isSubmitting}
+            />
+            <button type="submit" style={styles.submitBtn} disabled={isSubmitting}>
+              {isSubmitting ? 'SAVING...' : 'INSERT RECORD'}
+            </button>
+          </form>
+
+          {actionMsg && <div style={styles.actionNotice}>{actionMsg}</div>}
+
+          {waterBodies.length > 0 && (
+            <div style={{ marginTop: '1rem' }}>
+              <div style={styles.metricLabel}>RECENT PERSISTED WATER BODIES:</div>
+              <div style={styles.tableWrapper}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>ID</th>
+                      <th style={styles.th}>NAME</th>
+                      <th style={styles.th}>COUNTRY</th>
+                      <th style={styles.th}>SOURCE</th>
+                      <th style={styles.th}>STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {waterBodies.map((wb) => (
+                      <tr key={wb.id}>
+                        <td style={styles.tdMono}>{wb.id.substring(0, 8)}...</td>
+                        <td style={styles.td}>{wb.name}</td>
+                        <td style={styles.td}>{wb.country || '-'}</td>
+                        <td style={styles.tdMono}>{wb.source}</td>
+                        <td style={styles.td}>
+                          <span style={styles.statusPill}>
+                            {wb.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Architecture & Pipeline Architecture Details */}
       <section style={styles.sectionCard}>
         <div style={styles.sectionHeader}>
-          <h2 style={styles.sectionTitle}>DATA PIPELINE ARCHITECTURE (FOUNDATION)</h2>
+          <h2 style={styles.sectionTitle}>DATA PIPELINE STORAGE SUB-DIRECTORIES</h2>
         </div>
-        <p style={styles.description}>
-          JalNetra 2.0 operates a multi-stage geospatial water monitoring pipeline. Local storage
-          manifests and directory structures are initialized to ensure stable offline-first
-          and local processing before cloud or satellite synchronization.
-        </p>
 
         <div style={styles.tableWrapper}>
           <table style={styles.table}>
@@ -79,47 +195,31 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <tr>
                 <th style={styles.th}>SUBSYSTEM</th>
                 <th style={styles.th}>LOCAL DIRECTORY</th>
-                <th style={styles.th}>PHASE</th>
+                <th style={styles.th}>FILES</th>
                 <th style={styles.th}>STATUS</th>
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td style={styles.td}>Spatial Water-Body Catalog</td>
-                <td style={styles.tdMono}>data/water_bodies/</td>
-                <td style={styles.td}>Phase 1</td>
-                <td style={styles.td}><span style={styles.statusPill}>Initialized</span></td>
-              </tr>
-              <tr>
-                <td style={styles.td}>Raw Satellite Scenes (Sentinel-2)</td>
-                <td style={styles.tdMono}>data/scenes/</td>
-                <td style={styles.td}>Phase 2</td>
-                <td style={styles.td}><span style={styles.statusPill}>Initialized</span></td>
-              </tr>
-              <tr>
-                <td style={styles.td}>Spectral & Mask Processed Products</td>
-                <td style={styles.tdMono}>data/processed/</td>
-                <td style={styles.td}>Phase 3</td>
-                <td style={styles.td}><span style={styles.statusPill}>Initialized</span></td>
-              </tr>
-              <tr>
-                <td style={styles.td}>Map Tiles Cache</td>
-                <td style={styles.tdMono}>data/tiles/</td>
-                <td style={styles.td}>Phase 3</td>
-                <td style={styles.td}><span style={styles.statusPill}>Initialized</span></td>
-              </tr>
-              <tr>
-                <td style={styles.td}>Analytical & Report Exports</td>
-                <td style={styles.tdMono}>data/exports/</td>
-                <td style={styles.td}>Phase 4</td>
-                <td style={styles.td}><span style={styles.statusPill}>Initialized</span></td>
-              </tr>
-              <tr>
-                <td style={styles.td}>Sync Manifests & Checkpoints</td>
-                <td style={styles.tdMono}>data/manifests/</td>
-                <td style={styles.td}>Phase 1-4</td>
-                <td style={styles.td}><span style={styles.statusPill}>Initialized</span></td>
-              </tr>
+              {storageStatus?.details &&
+                Object.entries(storageStatus.details).map(([key, val]) => (
+                  <tr key={key}>
+                    <td style={styles.td}>{key.toUpperCase()}</td>
+                    <td style={styles.tdMono}>{val.path}</td>
+                    <td style={styles.td}>{val.file_count}</td>
+                    <td style={styles.td}>
+                      <span style={styles.statusPill}>
+                        {val.exists ? 'Available' : 'Missing'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              {!storageStatus?.details && (
+                <tr>
+                  <td colSpan={4} style={styles.td}>
+                    Connect backend to read storage directories status.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -197,6 +297,37 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--color-text-secondary)',
     fontFamily: 'var(--font-mono)',
     wordBreak: 'break-all',
+  },
+  formRow: {
+    display: 'flex',
+    gap: '0.5rem',
+    marginBottom: '0.75rem',
+  },
+  input: {
+    flex: 1,
+    padding: '0.45rem 0.75rem',
+    border: '1px solid var(--border-color-strong)',
+    fontSize: '0.8rem',
+    outline: 'none',
+  },
+  submitBtn: {
+    backgroundColor: 'var(--color-primary)',
+    color: '#ffffff',
+    border: 'none',
+    padding: '0.45rem 1rem',
+    fontWeight: 700,
+    fontSize: '0.75rem',
+    cursor: 'pointer',
+    letterSpacing: '0.04em',
+  },
+  actionNotice: {
+    backgroundColor: 'var(--color-primary-subtle)',
+    border: '1px solid var(--color-primary)',
+    color: 'var(--color-primary-dark)',
+    padding: '0.5rem 0.75rem',
+    fontSize: '0.75rem',
+    fontFamily: 'var(--font-mono)',
+    marginBottom: '0.75rem',
   },
   tableWrapper: {
     overflowX: 'auto',

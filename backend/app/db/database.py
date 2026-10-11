@@ -4,7 +4,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from app.core.config import settings
 from app.core.paths import ensure_data_directories
 
-# Ensure local data directory structure exists before initializing database
+# Ensure local data directory structure exists
 ensure_data_directories(settings.resolved_data_dir)
 
 # Connect args needed for SQLite thread handling
@@ -21,13 +21,6 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
-
-
-def init_db() -> None:
-    """
-    Initializes database tables.
-    """
-    Base.metadata.create_all(bind=engine)
 
 
 def get_db() -> Generator[Session, None, None]:

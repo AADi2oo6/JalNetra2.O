@@ -1,4 +1,32 @@
 from pydantic import BaseModel, Field
+from typing import Dict, Any, Optional
+
+from app.schemas.water_body import (
+    WaterBodyCreate,
+    WaterBodyUpdate,
+    WaterBodyRead,
+    WaterBodyListResponse,
+)
+from app.schemas.satellite_scene import (
+    SatelliteSceneCreate,
+    SatelliteSceneRead,
+    SatelliteSceneListResponse,
+)
+from app.schemas.satellite_asset import (
+    SatelliteAssetCreate,
+    SatelliteAssetRead,
+    SatelliteAssetListResponse,
+)
+from app.schemas.analysis_run import (
+    AnalysisRunCreate,
+    AnalysisRunRead,
+    AnalysisRunListResponse,
+)
+from app.schemas.cache import (
+    CacheEntryCreate,
+    CacheEntryRead,
+    CacheEntryListResponse,
+)
 
 
 class HealthResponse(BaseModel):
@@ -14,3 +42,41 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorDetail
+
+
+class StorageDirectoryStatus(BaseModel):
+    path: str
+    exists: bool
+    is_directory: bool
+    file_count: int
+
+
+class StorageStatusResponse(BaseModel):
+    database: Dict[str, Any]
+    directories: Dict[str, str]
+    details: Dict[str, StorageDirectoryStatus]
+
+
+__all__ = [
+    "HealthResponse",
+    "ErrorDetail",
+    "ErrorResponse",
+    "StorageDirectoryStatus",
+    "StorageStatusResponse",
+    "WaterBodyCreate",
+    "WaterBodyUpdate",
+    "WaterBodyRead",
+    "WaterBodyListResponse",
+    "SatelliteSceneCreate",
+    "SatelliteSceneRead",
+    "SatelliteSceneListResponse",
+    "SatelliteAssetCreate",
+    "SatelliteAssetRead",
+    "SatelliteAssetListResponse",
+    "AnalysisRunCreate",
+    "AnalysisRunRead",
+    "AnalysisRunListResponse",
+    "CacheEntryCreate",
+    "CacheEntryRead",
+    "CacheEntryListResponse",
+]

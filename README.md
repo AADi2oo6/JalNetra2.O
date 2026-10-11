@@ -1,63 +1,115 @@
-# JalNetra 2.0 (Phase 0: Core Foundation)
+# JalNetra 2.0 (Phase 1: Local Database + Storage Foundation)
 
 **JalNetra 2.0** is an open-source, scalable geospatial platform engineered for monitoring water bodies, surface water extent, water quality indices, and hydrological anomalies using satellite observations and remote sensing telemetry.
 
-## Current Development Phase: Phase 0
+## Current Development Phase: Phase 1 Complete
 
-This repository is currently at **Phase 0: Core Development Foundation**. The goal is strictly to establish a robust, reliable, and clean architectural foundation with:
-- Modular FastAPI backend
-- Scalable SQLite/SQLAlchemy local storage architecture
-- Reusable filesystem directory structures for satellite data processing
-- Centralized logging, error handling, and test suites
-- Clean React + TypeScript + Vite frontend styled for environmental monitoring operations
-
-> Satellite acquisition, Sentinel-2 processing, ML classifiers, and IoT telemetry will be implemented incrementally in subsequent phases.
+This repository has completed **Phase 1: Local Database + Storage Foundation**. It establishes a production-grade local persistence and storage abstraction layer:
+- **SQLite Database with Alembic Migrations**: Fully version-controlled schemas (`alembic upgrade head`) replacing runtime auto-generation.
+- **Relational Domain Models**: `WaterBody`, `SatelliteScene`, `SatelliteAsset`, `AnalysisRun`, `CacheEntry` with clean foreign keys and indexes.
+- **Layered Architecture**: API Routes &rarr; Service Layer &rarr; Repository Layer &rarr; SQLAlchemy 2.x &rarr; SQLite.
+- **Local Storage Abstraction (`LocalStorageService`)**: Secure file path traversal prevention, atomic writes, SHA256 checksums, and deterministic directory structures.
+- **Water Body CRUD & Storage Status APIs**: Fully tested RESTful endpoints with Pydantic v2 schemas and centralized exception handling.
+- **Persistence Verification**: Tests validating data survival across engine disconnections and process restarts.
 
 ---
 
-## Architecture Overview
+## Architecture Diagram
+
+```text
+Frontend (React + Vite)
+   │
+   ▼ HTTP / JSON
+FastAPI API Layer (app/api/v1/)
+   │
+   ▼
+Service Layer (app/services/)
+   ├── WaterBodyService
+   └── LocalStorageService ──▶ data/ (Local Filesystem: scenes, processed, cache, etc.)
+   │
+   ▼
+Repository Layer (app/db/repositories/)
+   ├── WaterBodyRepository
+   ├── SatelliteSceneRepository
+   ├── SatelliteAssetRepository
+   ├── AnalysisRunRepository
+   └── CacheRepository
+   │
+   ▼
+SQLAlchemy 2.x / Alembic
+   │
+   ▼
+SQLite Database (data/database/jalnetra.db)
+```
+
+---
+
+## Directory Structure
 
 ```text
 JalNetra2.O/
 ├── backend/
+│   ├── alembic/                      # Alembic migrations directory
+│   │   ├── versions/                 # Version-controlled schema scripts
+│   │   └── env.py                    # Alembic runtime environment
+│   ├── alembic.ini                   # Alembic configuration
 │   ├── app/
 │   │   ├── api/
 │   │   │   └── v1/
-│   │   │       ├── health.py         # Versioned health check router
+│   │   │       ├── health.py         # Service health check router
+│   │   │       ├── water_bodies.py   # Water-body CRUD API router
+│   │   │       ├── storage.py        # Storage and database status router
 │   │   │       └── __init__.py
 │   │   ├── core/
 │   │   │   ├── config.py             # Pydantic v2 settings management
 │   │   │   ├── logging.py            # Centralized timestamped logging
 │   │   │   └── paths.py              # Repository root & data path resolution
 │   │   ├── db/
-│   │   │   ├── models/               # SQLAlchemy models (Phase 1+)
-│   │   │   └── database.py           # SQLite connection & sessionmaker
-│   │   ├── schemas/                  # Pydantic v2 schemas
-│   │   ├── services/                 # Modular business logic services
+│   │   │   ├── models/               # SQLAlchemy 2 models
+│   │   │   │   ├── water_body.py
+│   │   │   │   ├── satellite_scene.py
+│   │   │   │   ├── satellite_asset.py
+│   │   │   │   ├── analysis_run.py
+│   │   │   │   ├── cache_entry.py
+│   │   │   │   └── __init__.py
+│   │   │   ├── repositories/         # Repository pattern for DB operations
+│   │   │   │   ├── water_body_repository.py
+│   │   │   │   ├── satellite_scene_repository.py
+│   │   │   │   ├── satellite_asset_repository.py
+│   │   │   │   ├── analysis_run_repository.py
+│   │   │   │   ├── cache_repository.py
+│   │   │   │   └── __init__.py
+│   │   │   └── database.py           # Engine & SessionLocal provider
+│   │   ├── schemas/                  # Pydantic v2 validation DTOs
+│   │   │   ├── water_body.py
+│   │   │   ├── satellite_scene.py
+│   │   │   ├── satellite_asset.py
+│   │   │   ├── analysis_run.py
+│   │   │   ├── cache.py
+│   │   │   └── __init__.py
+│   │   ├── services/                 # Business logic & filesystem abstraction
+│   │   │   ├── water_body_service.py
+│   │   │   ├── storage_service.py
+│   │   │   └── __init__.py
 │   │   ├── __init__.py
-│   │   └── main.py                   # FastAPI application factory & lifespan
-│   ├── tests/                        # Pytest suite
+│   │   └── main.py                   # FastAPI application factory
+│   ├── tests/                        # Pytest suite (23 passing tests)
 │   ├── requirements.txt
 │   └── .env.example
 │
-├── frontend/
+├── frontend/                         # React 18 + TypeScript + Vite
 │   ├── src/
-│   │   ├── api/
-│   │   │   ├── client.ts             # Central API client
-│   │   │   └── index.ts
-│   │   ├── components/
-│   │   │   ├── Header.tsx            # Header with live connection status
-│   │   │   └── Navigation.tsx        # Module navigation tabs
-│   │   ├── pages/
-│   │   │   └── Dashboard.tsx         # System status & pipeline architecture
-│   │   ├── App.tsx                   # Main application shell
-│   │   ├── main.tsx                  # React entry point
-│   │   └── index.css                 # Clean government-style CSS design tokens
+│   │   ├── api/                      # Central API client
+│   │   ├── components/               # Header and Navigation
+│   │   ├── pages/                    # Dashboard & persistence tester
+│   │   ├── App.tsx
+│   │   ├── main.tsx
+│   │   └── index.css                 # Clean government environmental design tokens
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── .env.example
 │
-├── data/                             # Local geospatial data pipeline storage
+├── data/                             # Local data pipeline storage
 │   ├── database/                     # SQLite database (jalnetra.db)
 │   ├── water_bodies/                 # Spatial vector geometries
 │   ├── scenes/                       # Raw satellite scenes (Sentinel-2)
@@ -67,8 +119,8 @@ JalNetra2.O/
 │   ├── exports/                      # Reports & GeoJSON exports
 │   └── manifests/                    # Pipeline run manifests
 │
-├── scripts/                          # Utility & automation scripts
-├── docs/                             # Documentation
+├── scripts/
+├── docs/
 ├── .gitignore
 ├── .env.example
 └── README.md
@@ -84,30 +136,73 @@ JalNetra2.O/
 
 ---
 
-## Environment Variables
+## Database Migrations (Alembic)
 
-Copy the example environment file at the root or within `backend/`:
+Alembic is the single source of truth for the database schema.
+
+### Applying Migrations
+
+From the `backend` directory:
 
 ```bash
-cp .env.example .env
+alembic upgrade head
 ```
 
-Key variables:
-- `APP_NAME`: Name of the API (`JalNetra API`)
-- `APP_VERSION`: Current version (`2.0.0`)
-- `ENVIRONMENT`: `development` | `production`
-- `DEBUG`: `true` | `false`
-- `DATABASE_URL`: SQLite URL (`sqlite:///./data/database/jalnetra.db`)
-- `DATA_DIR`: Base storage path (`./data`)
-- `FRONTEND_URL`: Allowed CORS origin (`http://localhost:5173`)
+### Creating New Migrations
 
-*Note: Future integration credentials (`SENTINEL_CLIENT_ID`, `OPENAI_API_KEY`, etc.) are optional placeholders and not required during Phase 0.*
+After modifying or adding models in `backend/app/db/models/`:
+
+```bash
+alembic revision --autogenerate -m "describe_changes"
+```
+
+Review the generated script in `backend/alembic/versions/` and apply with `alembic upgrade head`.
+
+### Inspecting the Database
+
+Inspect with SQLite CLI:
+
+```bash
+sqlite3 data/database/jalnetra.db ".tables"
+```
+
+Tables: `water_bodies`, `satellite_scenes`, `satellite_assets`, `analysis_runs`, `cache_entries`, `alembic_version`.
 
 ---
 
-## Getting Started
+## API Endpoints
 
-### 1. Backend Setup
+### Health & System
+- `GET /health` & `GET /api/v1/health`: System health and version.
+- `GET /api/v1/storage/status`: Health check of SQLite database and all data sub-directories.
+- `GET /docs`: Interactive Swagger OpenAPI documentation.
+
+### Water Bodies (`/api/v1/water-bodies`)
+- `POST /api/v1/water-bodies`: Create a new water body record.
+- `GET /api/v1/water-bodies`: List water bodies with filters (`search`, `country`, `source`, `is_active`, `limit`, `offset`).
+- `GET /api/v1/water-bodies/{id}`: Retrieve a specific water body by UUID.
+- `PATCH /api/v1/water-bodies/{id}`: Partially update a water body.
+- `DELETE /api/v1/water-bodies/{id}`: Soft-delete (sets `is_active = false`).
+
+---
+
+## Local Storage Abstraction (`LocalStorageService`)
+
+All binary and filesystem operations route through `LocalStorageService` (`backend/app/services/storage_service.py`):
+- **Path Traversal Protection**: Rejects paths attempting to escape `data/` (e.g., `../../etc`).
+- **Atomic File Writes**: Writes data to a temporary file in the destination folder before an atomic replace (`os.fsync` + `shutil.move`).
+- **Checksums**: Computes streaming SHA256 hashes (`calculate_sha256`).
+- **Deterministic Paths**:
+  - Scenes: `data/scenes/{scene_id}/`
+  - Processed outputs: `data/processed/{analysis_run_id}/`
+  - Water bodies: `data/water_bodies/{water_body_id}/`
+  - Cache: `data/cache/{cache_key}/`
+
+---
+
+## Running the Application
+
+### 1. Backend
 
 ```bash
 cd backend
@@ -119,19 +214,11 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
-```
-
-Run the backend server:
-
-```bash
+alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
-- Health Endpoint: [http://localhost:8000/health](http://localhost:8000/health)
-- API v1 Health: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
-- Swagger OpenAPI Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
-
-### 2. Frontend Setup
+### 2. Frontend
 
 ```bash
 cd frontend
@@ -139,35 +226,33 @@ npm install
 npm run dev
 ```
 
-The frontend will run on [http://localhost:5173](http://localhost:5173). It connects to the backend and displays the active connection status badge.
+Visit [http://localhost:5173](http://localhost:5173).
 
 ---
 
 ## Running Tests
 
-### Backend Tests
-
-From the `backend` directory (with virtual environment activated):
+From `backend` with the virtual environment activated:
 
 ```bash
-pytest
+pytest -v
 ```
 
-Runs tests verifying configuration loading, path resolution, database creation, Swagger documentation, and health endpoints.
-
-### Frontend Production Build
-
-From the `frontend` directory:
-
-```bash
-npm run build
-```
+Runs 23 tests verifying:
+1. Health and configuration defaults.
+2. Local storage directory management, atomic writes, streaming, SHA256 checksums, and path traversal prevention.
+3. Database models, uniqueness constraints, and relationships.
+4. Water body CRUD operations via repositories and service layer.
+5. Live HTTP REST endpoints (`POST`, `GET`, `PATCH`, `DELETE`, `/storage/status`).
+6. Full database session close/reopen cycle confirming persistent SQLite storage across process restarts.
 
 ---
 
-## Roadmap & Future Phases
+## Roadmap
 
-- **Phase 1**: Water-Body Catalog & Discovery (GeoJSON/Shapefile ingestion, bounding boxes, metadata).
-- **Phase 2**: Sentinel-2 Imagery Acquisition & Tile Processing.
-- **Phase 3**: Water Surface Extraction, Spectral Indices (NDWI, MNDWI), & Machine Learning Classification.
-- **Phase 4**: Temporal Trend Analysis, Anomaly Detection, Alerting & Report Generation.
+- **Phase 0**: Core Development Foundation (Complete)
+- **Phase 1**: Local Database + Storage Foundation (Complete)
+- **Phase 2**: Global Water-Body Discovery (Next)
+- **Phase 3**: Sentinel-2 Acquisition & Tile Processing
+- **Phase 4**: Spectral Indices & Water Detection
+- **Phase 5**: Telemetry, Alerting & Reporting

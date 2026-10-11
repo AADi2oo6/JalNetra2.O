@@ -1,2 +1,14 @@
 """SQLAlchemy Models package"""
-# Models for water bodies, scenes, etc. will be registered here in future phases.
+from app.db.models.water_body import WaterBody
+from app.db.models.satellite_scene import SatelliteScene
+from app.db.models.satellite_asset import SatelliteAsset
+from app.db.models.analysis_run import AnalysisRun
+from app.db.models.cache_entry import CacheEntry
+
+__all__ = [
+    "WaterBody",
+    "SatelliteScene",
+    "SatelliteAsset",
+    "AnalysisRun",
+    "CacheEntry",
+]
