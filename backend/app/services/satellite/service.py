@@ -62,14 +62,15 @@ class SatelliteService:
 
     async def search_scenes_for_water_body(
         self,
-        water_body_id: str,
+        water_body_id: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         max_cloud_cover: float = 30.0,
         limit: int = 10,
+        bbox_override: Optional[List[float]] = None,
     ) -> SceneSearchResponse:
-        wb = self.wb_repo.get_by_id(water_body_id)
-        if not wb:
+        wb = self.wb_repo.get_by_id(water_body_id) if water_body_id else None
+        if not wb and not bbox_override:
             raise SatelliteServiceError(
                 f"Water body with ID '{water_body_id}' not found.",
                 code="WATER_BODY_NOT_FOUND",
@@ -77,29 +78,34 @@ class SatelliteService:
 
         # Parse geometry or fallback to bounding box [min_lon, min_lat, max_lon, max_lat]
         geometry_dict = None
-        if wb.geometry_geojson:
-            try:
-                parsed = json.loads(wb.geometry_geojson)
-                if parsed.get("type") in ("Polygon", "MultiPolygon", "Point"):
-                    geometry_dict = parsed
-            except Exception:
-                pass
-
         bbox = None
-        if wb.min_lon is not None and wb.min_lat is not None and wb.max_lon is not None and wb.max_lat is not None:
-            bbox = [wb.min_lon, wb.min_lat, wb.max_lon, wb.max_lat]
-        elif wb.centroid_lon is not None and wb.centroid_lat is not None:
-            # Point expansion into minimal 0.02 deg box (~2 km)
-            bbox = [
-                wb.centroid_lon - 0.01,
-                wb.centroid_lat - 0.01,
-                wb.centroid_lon + 0.01,
-                wb.centroid_lat + 0.01,
-            ]
+
+        if bbox_override:
+            bbox = bbox_override
+        elif wb:
+            if wb.geometry_geojson:
+                try:
+                    parsed = json.loads(wb.geometry_geojson)
+                    if parsed.get("type") in ("Polygon", "MultiPolygon", "Point"):
+                        geometry_dict = parsed
+                except Exception:
+                    pass
+
+            if wb.min_lon is not None and wb.min_lat is not None and wb.max_lon is not None and wb.max_lat is not None:
+                bbox = [wb.min_lon, wb.min_lat, wb.max_lon, wb.max_lat]
+            elif wb.centroid_lon is not None and wb.centroid_lat is not None:
+                # Point expansion into minimal 0.02 deg box (~2 km)
+                bbox = [
+                    wb.centroid_lon - 0.01,
+                    wb.centroid_lat - 0.01,
+                    wb.centroid_lon + 0.01,
+                    wb.centroid_lat + 0.01,
+                ]
 
         if not geometry_dict and not bbox:
+            wb_name = wb.name if wb else "AOI"
             raise SatelliteServiceError(
-                f"Water body '{wb.name}' does not have geographic coordinates or bounding box.",
+                f"Water body '{wb_name}' does not have geographic coordinates or bounding box.",
                 code="MISSING_GEOMETRY",
             )
 

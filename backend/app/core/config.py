@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     SATELLITE_REQUEST_TIMEOUT_SECONDS: float = 60.0
     SATELLITE_CACHE_TTL_SECONDS: int = 86400
 
+    # Map & Visualization Focus Settings
+    WATER_BODY_MAP_PADDING_PERCENT: float = 10.0
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",

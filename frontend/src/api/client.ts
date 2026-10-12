@@ -151,7 +151,14 @@ export interface SceneAcquisitionResponse {
   assets: AssetAcquisitionStatus[];
 }
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+export function resolveApiUrl(url?: string | null): string {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  const cleanPath = url.startsWith('/') ? url : `/${url}`;
+  return `${BASE_URL}${cleanPath}`;
+}
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -247,17 +254,19 @@ export async function getDiscoveryProviders(): Promise<ProviderListResponse> {
 
 // Satellite API
 export async function searchSatelliteScenes(
-  waterBodyId: string,
+  waterBodyId?: string,
   startDate?: string,
   endDate?: string,
   maxCloudCover = 30,
-  limit = 10
+  limit = 10,
+  bbox?: string
 ): Promise<SceneSearchResponse> {
   const params = new URLSearchParams({
-    water_body_id: waterBodyId,
     max_cloud_cover: String(maxCloudCover),
     limit: String(limit),
   });
+  if (waterBodyId) params.append('water_body_id', waterBodyId);
+  if (bbox) params.append('bbox', bbox);
   if (startDate) params.append('start_date', startDate);
   if (endDate) params.append('end_date', endDate);
 
@@ -302,6 +311,7 @@ export interface MapSceneItem {
   bbox?: number[] | null;
   downloaded_assets: string[];
   has_rgb: boolean;
+  covers_water_body?: boolean;
 }
 
 export interface SceneRasterMetadata {
@@ -333,7 +343,13 @@ export interface SceneRasterMetadata {
 export interface RGBVisualizationData {
   scene_id: string;
   external_scene_id: string;
+  water_body_id?: string | null;
+  is_focused?: boolean;
   crs: string;
+  source_crs?: string;
+  resolution_m?: number;
+  bands?: string[];
+  sensing_date?: string | null;
   bounds: MapGeoBounds;
   width: number;
   height: number;
@@ -363,15 +379,43 @@ export async function getSceneRasterMetadata(sceneId: string): Promise<SceneRast
   return handleResponse<SceneRasterMetadata>(response);
 }
 
-export async function getSceneRGBVisualization(sceneId: string, forceRegenerate = false): Promise<RGBVisualizationData> {
-  const response = await fetch(`${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/rgb?force_regenerate=${forceRegenerate}`, {
+export async function getSceneRGBVisualization(
+  sceneId: string,
+  waterBodyId?: string,
+  forceRegenerate = false,
+  bbox?: [number, number, number, number] | string,
+  paddingPercent?: number,
+): Promise<RGBVisualizationData> {
+  const params = new URLSearchParams();
+  if (waterBodyId) params.append('water_body_id', waterBodyId);
+  if (forceRegenerate) params.append('force_regenerate', 'true');
+  if (bbox) {
+    const bboxStr = Array.isArray(bbox) ? bbox.join(',') : bbox;
+    params.append('bbox', bboxStr);
+  }
+  if (paddingPercent != null) params.append('padding_percent', String(paddingPercent));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetch(`${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/rgb${qs}`, {
     headers: { 'Accept': 'application/json' },
   });
   return handleResponse<RGBVisualizationData>(response);
 }
 
-export function getSceneRGBImageUrl(sceneId: string): string {
-  return `${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/rgb/image`;
+export function getSceneRGBImageUrl(
+  sceneId: string,
+  waterBodyId?: string,
+  bbox?: [number, number, number, number] | string,
+  paddingPercent?: number,
+): string {
+  const params = new URLSearchParams();
+  if (waterBodyId) params.append('water_body_id', waterBodyId);
+  if (bbox) {
+    const bboxStr = Array.isArray(bbox) ? bbox.join(',') : bbox;
+    params.append('bbox', bboxStr);
+  }
+  if (paddingPercent != null) params.append('padding_percent', String(paddingPercent));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return `${BASE_URL}/api/v1/map/scenes/${encodeURIComponent(sceneId)}/rgb/image${qs}`;
 }
 
 // Processing API (Phase 5)
@@ -439,24 +483,76 @@ export async function runSceneProcessing(sceneId: string, threshold = 0.0, force
   return handleResponse<ProcessingStatusResponse>(response);
 }
 
-export async function getCloudMaskVisualization(sceneId: string): Promise<MaskVisualizationResponse> {
-  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/cloud-mask`, {
+export async function getCloudMaskVisualization(
+  sceneId: string,
+  waterBodyId?: string,
+  bbox?: [number, number, number, number] | string,
+  paddingPercent?: number,
+): Promise<MaskVisualizationResponse> {
+  const params = new URLSearchParams();
+  if (waterBodyId) params.append('water_body_id', waterBodyId);
+  if (bbox) {
+    const bboxStr = Array.isArray(bbox) ? bbox.join(',') : bbox;
+    params.append('bbox', bboxStr);
+  }
+  if (paddingPercent != null) params.append('padding_percent', String(paddingPercent));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/cloud-mask${qs}`, {
     headers: { 'Accept': 'application/json' },
   });
   return handleResponse<MaskVisualizationResponse>(response);
 }
 
-export async function getWaterMaskVisualization(sceneId: string): Promise<MaskVisualizationResponse> {
-  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/water-mask`, {
+export async function getWaterMaskVisualization(
+  sceneId: string,
+  waterBodyId?: string,
+  bbox?: [number, number, number, number] | string,
+  paddingPercent?: number,
+): Promise<MaskVisualizationResponse> {
+  const params = new URLSearchParams();
+  if (waterBodyId) params.append('water_body_id', waterBodyId);
+  if (bbox) {
+    const bboxStr = Array.isArray(bbox) ? bbox.join(',') : bbox;
+    params.append('bbox', bboxStr);
+  }
+  if (paddingPercent != null) params.append('padding_percent', String(paddingPercent));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetch(`${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/water-mask${qs}`, {
     headers: { 'Accept': 'application/json' },
   });
   return handleResponse<MaskVisualizationResponse>(response);
 }
 
-export function getCloudMaskImageUrl(sceneId: string): string {
-  return `${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/cloud-mask/image`;
+export function getCloudMaskImageUrl(
+  sceneId: string,
+  waterBodyId?: string,
+  bbox?: [number, number, number, number] | string,
+  paddingPercent?: number,
+): string {
+  const params = new URLSearchParams();
+  if (waterBodyId) params.append('water_body_id', waterBodyId);
+  if (bbox) {
+    const bboxStr = Array.isArray(bbox) ? bbox.join(',') : bbox;
+    params.append('bbox', bboxStr);
+  }
+  if (paddingPercent != null) params.append('padding_percent', String(paddingPercent));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return `${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/cloud-mask/image${qs}`;
 }
 
-export function getWaterMaskImageUrl(sceneId: string): string {
-  return `${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/water-mask/image`;
+export function getWaterMaskImageUrl(
+  sceneId: string,
+  waterBodyId?: string,
+  bbox?: [number, number, number, number] | string,
+  paddingPercent?: number,
+): string {
+  const params = new URLSearchParams();
+  if (waterBodyId) params.append('water_body_id', waterBodyId);
+  if (bbox) {
+    const bboxStr = Array.isArray(bbox) ? bbox.join(',') : bbox;
+    params.append('bbox', bboxStr);
+  }
+  if (paddingPercent != null) params.append('padding_percent', String(paddingPercent));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return `${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/water-mask/image${qs}`;
 }

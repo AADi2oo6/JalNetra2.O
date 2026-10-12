@@ -1,6 +1,7 @@
 """
 Integration tests for Processing API endpoints (Phase 5).
 """
+import pytest
 from pathlib import Path
 from datetime import datetime, timezone
 from fastapi.testclient import TestClient
@@ -89,6 +90,24 @@ def test_processing_api_endpoints(client: TestClient, db_session: Session, tmp_p
     assert wm_img.status_code == 200
     assert wm_img.headers["content-type"] == "image/png"
     assert len(wm_img.content) > 0
+
+    # 7. GET cloud mask & water mask with bbox parameter
+    bbox_str = "85.1,19.4,85.3,19.6"
+    cm_bbox = client.get(f"/api/v1/processing/scenes/{scene_id}/cloud-mask?bbox={bbox_str}")
+    assert cm_bbox.status_code == 200
+    assert cm_bbox.json()["bounds"]["west"] == pytest.approx(85.1, abs=0.05)
+
+    cm_bbox_img = client.get(f"/api/v1/processing/scenes/{scene_id}/cloud-mask/image?bbox={bbox_str}")
+    assert cm_bbox_img.status_code == 200
+    assert cm_bbox_img.headers["content-type"] == "image/png"
+
+    wm_bbox = client.get(f"/api/v1/processing/scenes/{scene_id}/water-mask?bbox={bbox_str}")
+    assert wm_bbox.status_code == 200
+    assert wm_bbox.json()["bounds"]["west"] == pytest.approx(85.1, abs=0.05)
+
+    wm_bbox_img = client.get(f"/api/v1/processing/scenes/{scene_id}/water-mask/image?bbox={bbox_str}")
+    assert wm_bbox_img.status_code == 200
+    assert wm_bbox_img.headers["content-type"] == "image/png"
 
 
 def test_processing_api_security_path_traversal(client: TestClient):

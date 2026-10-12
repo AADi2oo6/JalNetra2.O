@@ -4,7 +4,7 @@ Coordinates SCL cloud masking, spectral water segmentation,
 metadata persistence, visualization overlay generation, and disk caching.
 """
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import json
 from datetime import datetime, timezone
 from PIL import Image
@@ -206,48 +206,82 @@ class ProcessingService:
         water_mask_path: Path,
         output_dir: Path,
         max_dimension: int = 1024,
+        crop_bounds: Optional[Tuple[float, float, float, float]] = None,
+        file_suffix: str = "",
     ) -> Dict[str, Any]:
         """
         Generates aligned semi-transparent RGBA PNG overlays for Leaflet ImageOverlay:
-        - cloud_mask.png: Amber/Orange overlay for cloud/shadow pixels
-        - water_mask.png: Vivid Cyan overlay for detected water pixels
-        - overlay_bounds.json: EPSG:4326 geographic bounding box
+        - cloud_mask{file_suffix}.png: Amber/Orange overlay for cloud/shadow pixels
+        - water_mask{file_suffix}.png: Vivid Cyan overlay for detected water pixels
+        - overlay_bounds{file_suffix}.json: EPSG:4326 geographic bounding box
         """
         with rasterio.open(scl_path) as src_scl, rasterio.open(water_mask_path) as src_wm:
             vrt_kwargs = {"crs": "EPSG:4326", "resampling": Resampling.nearest}
             with WarpedVRT(src_scl, **vrt_kwargs) as vrt_scl, WarpedVRT(src_wm, **vrt_kwargs) as vrt_wm:
-                bounds = vrt_scl.bounds
-                geo_bounds = GeoBounds(
-                    west=float(bounds.left),
-                    south=float(bounds.bottom),
-                    east=float(bounds.right),
-                    north=float(bounds.top),
-                )
+                window = None
+                if crop_bounds:
+                    cw, cs, ce, cn = crop_bounds
+                    rw, rs, re, rn = vrt_scl.bounds
+                    int_w = max(cw, rw)
+                    int_s = max(cs, rs)
+                    int_e = min(ce, re)
+                    int_n = min(cn, rn)
+                    if int_e > int_w and int_n > int_s:
+                        from rasterio.windows import from_bounds
+                        window = from_bounds(int_w, int_s, int_e, int_n, transform=vrt_scl.transform)
+                        win_bounds = rasterio.windows.bounds(window, vrt_scl.transform)
+                        geo_bounds = GeoBounds(
+                            west=float(win_bounds[0]),
+                            south=float(win_bounds[1]),
+                            east=float(win_bounds[2]),
+                            north=float(win_bounds[3]),
+                        )
+                        target_width = max(1, int(round(window.width)))
+                        target_height = max(1, int(round(window.height)))
 
-                aspect = vrt_scl.width / max(1, vrt_scl.height)
-                if aspect >= 1.0:
-                    out_w = max_dimension
-                    out_h = max(1, int(max_dimension / aspect))
+                if window is None:
+                    bounds = vrt_scl.bounds
+                    geo_bounds = GeoBounds(
+                        west=float(bounds.left),
+                        south=float(bounds.bottom),
+                        east=float(bounds.right),
+                        north=float(bounds.top),
+                    )
+                    target_width = vrt_scl.width
+                    target_height = vrt_scl.height
+
+                if window is not None and target_width <= max_dimension and target_height <= max_dimension:
+                    out_w = target_width
+                    out_h = target_height
+                    read_kwargs = {"window": window}
                 else:
-                    out_w = max(1, int(max_dimension * aspect))
-                    out_h = max_dimension
+                    aspect = target_width / max(1, target_height)
+                    if aspect >= 1.0:
+                        out_w = max_dimension
+                        out_h = max(1, int(round(max_dimension / aspect)))
+                    else:
+                        out_w = max(1, int(round(max_dimension * aspect)))
+                        out_h = max_dimension
+                    read_kwargs = {"out_shape": (out_h, out_w), "resampling": Resampling.nearest}
+                    if window is not None:
+                        read_kwargs["window"] = window
 
-                scl_grid = vrt_scl.read(1, out_shape=(out_h, out_w), resampling=Resampling.nearest)
-                wm_grid = vrt_wm.read(1, out_shape=(out_h, out_w), resampling=Resampling.nearest)
+                scl_grid = vrt_scl.read(1, **read_kwargs)
+                wm_grid = vrt_wm.read(1, **read_kwargs)
 
                 # 1. Cloud Overlay (Amber/Orange: R=245, G=158, B=11, Alpha=200 for cloud/shadow classes 3, 8, 9, 10)
                 is_cloud_shadow = np.isin(scl_grid, [3, 8, 9, 10])
                 cloud_rgba = np.zeros((out_h, out_w, 4), dtype=np.uint8)
                 cloud_rgba[is_cloud_shadow] = [245, 158, 11, 200]
                 img_cloud = Image.fromarray(cloud_rgba)
-                img_cloud.save(output_dir / "cloud_mask.png", format="PNG", optimize=True)
+                img_cloud.save(output_dir / f"cloud_mask{file_suffix}.png", format="PNG", optimize=True)
 
                 # 2. Water Overlay (Vivid Blue/Cyan: R=14, G=165, B=233, Alpha=210 for water pixels wm_grid == 1)
                 is_water = (wm_grid == 1)
                 water_rgba = np.zeros((out_h, out_w, 4), dtype=np.uint8)
                 water_rgba[is_water] = [14, 165, 233, 210]
                 img_water = Image.fromarray(water_rgba)
-                img_water.save(output_dir / "water_mask.png", format="PNG", optimize=True)
+                img_water.save(output_dir / f"water_mask{file_suffix}.png", format="PNG", optimize=True)
 
                 # 3. Cache overlay bounds
                 bounds_data = {
@@ -256,18 +290,70 @@ class ProcessingService:
                     "height": out_h,
                     "crs": "EPSG:4326",
                 }
-                with open(output_dir / "overlay_bounds.json", "w", encoding="utf-8") as f:
+                with open(output_dir / f"overlay_bounds{file_suffix}.json", "w", encoding="utf-8") as f:
                     json.dump(bounds_data, f, indent=2)
 
                 return bounds_data
+
+    def _resolve_crop_bounds(
+        self,
+        db: Session,
+        scene: SatelliteScene,
+        water_body_id: Optional[str] = None,
+        crop_bbox: Optional[Tuple[float, float, float, float]] = None,
+        padding_percent: Optional[float] = None,
+    ) -> Tuple[Optional[Tuple[float, float, float, float]], str]:
+        """Resolves geographic crop bounds and cache key for water body or manual AOI."""
+        if not water_body_id and not crop_bbox:
+            return None, ""
+
+        from app.services.raster.service import RasterService
+        cache_key = RasterService.compute_cache_key(scene.id, water_body_id, crop_bbox, padding_percent)
+
+        if crop_bbox:
+            return crop_bbox, f"_{cache_key}"
+
+        if water_body_id:
+            from app.db.models.water_body import WaterBody
+            wb = db.query(WaterBody).filter(WaterBody.id == water_body_id).first()
+            if not wb:
+                raise ValueError(f"Water body with ID '{water_body_id}' not found")
+
+            wb_w, wb_s, wb_e, wb_n = wb.min_lon, wb.min_lat, wb.max_lon, wb.max_lat
+            if wb_w is None and wb.geometry_geojson:
+                try:
+                    wb_geom = json.loads(wb.geometry_geojson)
+                    from shapely.geometry import shape
+                    wb_w, wb_s, wb_e, wb_n = shape(wb_geom).bounds
+                except Exception:
+                    pass
+            if wb_w is None and wb.centroid_lat is not None and wb.centroid_lon is not None:
+                wb_w = wb.centroid_lon - 0.01
+                wb_s = wb.centroid_lat - 0.01
+                wb_e = wb.centroid_lon + 0.01
+                wb_n = wb.centroid_lat + 0.01
+
+            if wb_w is not None:
+                pad_val = padding_percent if padding_percent is not None else getattr(settings, "WATER_BODY_MAP_PADDING_PERCENT", 10.0)
+                pad_pct = pad_val / 100.0
+                span_x = wb_e - wb_w
+                span_y = wb_n - wb_s
+                pad_x = max(span_x * pad_pct, 0.0001)
+                pad_y = max(span_y * pad_pct, 0.0001)
+                return (wb_w - pad_x, wb_s - pad_y, wb_e + pad_x, wb_n + pad_y), f"_{cache_key}"
+
+        return None, ""
 
     def get_mask_visualization(
         self,
         db: Session,
         scene_id: str,
         mask_type: str,
+        water_body_id: Optional[str] = None,
+        crop_bbox: Optional[Tuple[float, float, float, float]] = None,
+        padding_percent: Optional[float] = None,
     ) -> MaskVisualizationResponse:
-        """Returns geographic bounds and image URL for Leaflet ImageOverlay."""
+        """Returns geographic bounds and image URL for Leaflet ImageOverlay, cropped to AOI if requested."""
         scene = db.query(SatelliteScene).filter(
             (SatelliteScene.id == scene_id) | (SatelliteScene.external_scene_id == scene_id)
         ).first()
@@ -275,18 +361,54 @@ class ProcessingService:
             raise ValueError(f"Satellite scene not found: {scene_id}")
 
         scene_dir = self.get_scene_processed_dir(scene.id)
-        bounds_file = scene_dir / "overlay_bounds.json"
-        png_file = scene_dir / f"{mask_type}.png"
+        crop_bounds, file_suffix = self._resolve_crop_bounds(db, scene, water_body_id, crop_bbox, padding_percent)
 
-        if not bounds_file.exists() or not png_file.exists():
-            # Trigger processing if not done yet
+        bounds_file = scene_dir / f"overlay_bounds{file_suffix}.json"
+        png_file = scene_dir / f"{mask_type}{file_suffix}.png"
+
+        # If base scene processing has not been run, run it first
+        base_water_mask = scene_dir / "water_mask.tif"
+        if not base_water_mask.exists():
             self.process_scene(db, scene.id)
 
+        # If AOI-specific mask overlay hasn't been rendered yet, render it
         if not bounds_file.exists() or not png_file.exists():
-            raise FileNotFoundError(f"Visualization overlay {mask_type} could not be generated for scene {scene_id}")
+            assets = db.query(SatelliteAsset).filter(SatelliteAsset.scene_id == scene.id).all()
+            asset_map = {a.asset_key: a for a in assets}
+            if "SCL" in asset_map and asset_map["SCL"].local_path and base_water_mask.exists():
+                scl_path = self.data_dir / asset_map["SCL"].local_path
+                self._render_visualization_overlays(
+                    scl_path=scl_path,
+                    water_mask_path=base_water_mask,
+                    output_dir=scene_dir,
+                    crop_bounds=crop_bounds,
+                    file_suffix=file_suffix,
+                )
+
+        if not bounds_file.exists() or not png_file.exists():
+            # Fall back to base overlay if available
+            base_bounds = scene_dir / "overlay_bounds.json"
+            base_png = scene_dir / f"{mask_type}.png"
+            if base_bounds.exists() and base_png.exists():
+                bounds_file = base_bounds
+                png_file = base_png
+                file_suffix = ""
+            else:
+                raise FileNotFoundError(f"Visualization overlay {mask_type} could not be generated for scene {scene_id}")
 
         with open(bounds_file, "r", encoding="utf-8") as f:
             bounds_data = json.load(f)
+
+        img_url = f"/api/v1/processing/scenes/{scene.id}/{mask_type.replace('_', '-')}/image"
+        params = []
+        if crop_bbox:
+            params.append(f"bbox={crop_bbox[0]},{crop_bbox[1]},{crop_bbox[2]},{crop_bbox[3]}")
+        if water_body_id:
+            params.append(f"water_body_id={water_body_id}")
+        if padding_percent is not None and padding_percent != 10.0:
+            params.append(f"padding_percent={padding_percent}")
+        if params:
+            img_url += "?" + "&".join(params)
 
         return MaskVisualizationResponse(
             scene_id=scene.id,
@@ -295,12 +417,20 @@ class ProcessingService:
             bounds=GeoBounds(**bounds_data["bounds"]),
             width=bounds_data["width"],
             height=bounds_data["height"],
-            image_url=f"/api/v1/processing/scenes/{scene.id}/{mask_type.replace('_', '-')}/image",
+            image_url=img_url,
             cached=True,
             description=f"Sentinel-2 georeferenced {mask_type.replace('_', ' ')} visualization layer",
         )
 
-    def get_mask_image_path(self, db: Session, scene_id: str, mask_type: str) -> Path:
+    def get_mask_image_path(
+        self,
+        db: Session,
+        scene_id: str,
+        mask_type: str,
+        water_body_id: Optional[str] = None,
+        crop_bbox: Optional[Tuple[float, float, float, float]] = None,
+        padding_percent: Optional[float] = None,
+    ) -> Path:
         """Returns path to the PNG image file for streaming, ensuring it is rendered."""
         scene = db.query(SatelliteScene).filter(
             (SatelliteScene.id == scene_id) | (SatelliteScene.external_scene_id == scene_id)
@@ -309,11 +439,22 @@ class ProcessingService:
             raise ValueError(f"Satellite scene not found: {scene_id}")
 
         scene_dir = self.get_scene_processed_dir(scene.id)
-        png_path = scene_dir / f"{mask_type}.png"
-        if not png_path.exists():
-            self.process_scene(db, scene.id)
+        crop_bounds, file_suffix = self._resolve_crop_bounds(db, scene, water_body_id, crop_bbox, padding_percent)
+        png_path = scene_dir / f"{mask_type}{file_suffix}.png"
 
         if not png_path.exists():
+            # Trigger generation
+            self.get_mask_visualization(
+                db, scene.id, mask_type,
+                water_body_id=water_body_id,
+                crop_bbox=crop_bbox,
+                padding_percent=padding_percent,
+            )
+
+        if not png_path.exists():
+            base_png = scene_dir / f"{mask_type}.png"
+            if base_png.exists():
+                return base_png
             raise FileNotFoundError(f"Mask image {mask_type} not found for scene {scene_id}")
 
         return png_path

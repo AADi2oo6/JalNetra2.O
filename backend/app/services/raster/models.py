@@ -47,7 +47,13 @@ class RGBVisualizationResponse(BaseModel):
     """Response containing RGB visualization metadata and display bounds."""
     scene_id: str
     external_scene_id: str
+    water_body_id: Optional[str] = None
+    is_focused: bool = False
     crs: str = "EPSG:4326"
+    source_crs: Optional[str] = "EPSG:32643"
+    resolution_m: Optional[float] = 10.0
+    bands: List[str] = ["B04", "B03", "B02"]
+    sensing_date: Optional[str] = None
     bounds: GeoBounds
     width: int
     height: int

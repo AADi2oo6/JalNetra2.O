@@ -18,6 +18,7 @@ import rasterio
 from rasterio.transform import from_bounds
 from sqlalchemy.orm import Session
 
+from app.db.models.water_body import WaterBody
 from app.db.models.satellite_scene import SatelliteScene
 from app.db.models.satellite_asset import SatelliteAsset
 from app.services.raster.reader import RasterReader
@@ -188,3 +189,101 @@ def test_raster_service_missing_bands_error(db_session: Session, tmp_path: Path)
     with pytest.raises(FileNotFoundError) as exc_info:
         service.get_or_render_rgb(db_session, scene_id)
     assert "Missing downloaded band" in str(exc_info.value)
+
+
+def test_raster_service_focused_water_body_crop(db_session: Session, tmp_path: Path):
+    """Verifies that RasterService properly crops RGB to water body bbox + padding and isolates cache."""
+    data_dir = tmp_path / "data"
+    service = RasterService(data_dir=data_dir)
+
+    # 1. Create a water body
+    wb_id = "test-wb-uuid-crop"
+    wb = WaterBody(
+        id=wb_id,
+        name="Small Test Lake",
+        normalized_name="small test lake",
+        source="test",
+        source_id="test_lake_1",
+        min_lon=85.2,
+        min_lat=19.5,
+        max_lon=85.3,
+        max_lat=19.6,
+    )
+    db_session.add(wb)
+
+    # 2. Create scene record with wider bounds (EPSG:4326 for simplicity in synthetic geotiff)
+    scene_id = "test-scene-crop"
+    scene_dir = data_dir / "scenes" / scene_id / "assets"
+    scene = SatelliteScene(
+        id=scene_id,
+        provider="earth_search",
+        collection="sentinel-2-c1-l2a",
+        external_scene_id="S2A_CROP_TEST_SCENE",
+        sensing_start=datetime.now(timezone.utc),
+        status="downloaded",
+        bbox_min_lon=85.0,
+        bbox_min_lat=19.3,
+        bbox_max_lon=85.5,
+        bbox_max_lat=19.8,
+    )
+    db_session.add(scene)
+
+    for band_key in ["B04", "B03", "B02"]:
+        tif_file = scene_dir / f"{band_key}.tif"
+        create_synthetic_geotiff(
+            tif_file,
+            crs="EPSG:4326",
+            bounds=(85.0, 19.3, 85.5, 19.8),
+            fill_value=1200,
+        )
+        asset = SatelliteAsset(
+            scene_id=scene_id,
+            asset_key=band_key,
+            asset_type="image/tiff",
+            local_path=f"scenes/{scene_id}/assets/{band_key}.tif",
+            status="downloaded",
+            file_size_bytes=tif_file.stat().st_size,
+        )
+        db_session.add(asset)
+    db_session.commit()
+
+    # 3. Call get_or_render_rgb with water_body_id
+    res = service.get_or_render_rgb(db_session, scene_id, water_body_id=wb_id)
+    assert res.is_focused is True
+    assert res.water_body_id == wb_id
+    assert res.cached is False
+    assert res.source_crs is not None and "EPSG:" in res.source_crs
+    assert res.resolution_m is not None
+    assert res.bands == ["B04", "B03", "B02"]
+    assert res.sensing_date is not None
+    assert (data_dir / "processed" / "map" / scene_id / f"wb_{wb_id}_rgb.png").exists()
+    assert (data_dir / "processed" / "map" / scene_id / f"wb_{wb_id}_rgb_meta.json").exists()
+
+    # Bounds must be within padded water body bounds, tighter than full scene
+    assert res.bounds.west >= 85.0
+    assert res.bounds.east <= 85.5
+    assert res.bounds.south >= 19.3
+    assert res.bounds.north <= 19.8
+
+    # 4. Repeat call must be cached
+    res_cached = service.get_or_render_rgb(db_session, scene_id, water_body_id=wb_id)
+    assert res_cached.cached is True
+
+    # 5. Full scene call (without water_body_id) must not use the wb-specific cache
+    full_res = service.get_or_render_rgb(db_session, scene_id, water_body_id=None)
+    assert full_res.is_focused is False
+    assert full_res.water_body_id is None
+    assert (data_dir / "processed" / "map" / scene_id / "rgb.png").exists()
+
+    # 6. Custom padding call (25%) creates distinct cache
+    pad_res = service.get_or_render_rgb(db_session, scene_id, water_body_id=wb_id, padding_percent=25.0)
+    assert pad_res.is_focused is True
+    assert (data_dir / "processed" / "map" / scene_id / f"wb_{wb_id}_p25_rgb.png").exists()
+
+    # 7. Manual AOI crop call creates distinct cache
+    aoi_bbox = (85.15, 19.45, 85.35, 19.65)
+    aoi_res = service.get_or_render_rgb(db_session, scene_id, crop_bbox=aoi_bbox)
+    assert aoi_res.is_focused is True
+    assert (data_dir / "processed" / "map" / scene_id / f"aoi_{aoi_bbox[0]}_{aoi_bbox[1]}_{aoi_bbox[2]}_{aoi_bbox[3]}_rgb.png").exists()
+
+

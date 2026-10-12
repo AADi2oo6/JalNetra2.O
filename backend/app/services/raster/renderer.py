@@ -26,10 +26,12 @@ class RGBRenderer:
         max_dimension: int = 1024,
         lower_percentile: float = 2.0,
         upper_percentile: float = 98.0,
+        crop_bounds: Optional[Tuple[float, float, float, float]] = None,
     ) -> Dict[str, Any]:
         """
         Takes red (B04), green (B03), and blue (B02) GeoTIFFs,
         reprojects them on the fly to EPSG:4326 using WarpedVRT,
+        optionally crops to crop_bounds (west, south, east, north) in EPSG:4326,
         resamples them to a common grid capped at max_dimension,
         applies percentile-based contrast stretch to valid pixels,
         masks nodata/zero pixels transparently, and saves an RGBA PNG.
@@ -51,27 +53,64 @@ class RGBRenderer:
                  WarpedVRT(src_g, **vrt_kwargs) as vrt_g, \
                  WarpedVRT(src_b, **vrt_kwargs) as vrt_b:
 
-                bounds = vrt_r.bounds
-                geo_bounds = GeoBounds(
-                    west=float(bounds.left),
-                    south=float(bounds.bottom),
-                    east=float(bounds.right),
-                    north=float(bounds.top),
-                )
+                window = None
+                if crop_bounds:
+                    cw, cs, ce, cn = crop_bounds
+                    # Clamp crop bounds to the raster's extent
+                    rw, rs, re, rn = vrt_r.bounds
+                    int_w = max(cw, rw)
+                    int_s = max(cs, rs)
+                    int_e = min(ce, re)
+                    int_n = min(cn, rn)
 
-                # Determine output grid dimensions respecting aspect ratio
-                aspect = vrt_r.width / max(1, vrt_r.height)
-                if aspect >= 1.0:
-                    out_w = max_dimension
-                    out_h = max(1, int(max_dimension / aspect))
+                    if int_e > int_w and int_n > int_s:
+                        from rasterio.windows import from_bounds
+                        window = from_bounds(int_w, int_s, int_e, int_n, transform=vrt_r.transform)
+                        win_bounds = rasterio.windows.bounds(window, vrt_r.transform)
+                        geo_bounds = GeoBounds(
+                            west=float(win_bounds[0]),
+                            south=float(win_bounds[1]),
+                            east=float(win_bounds[2]),
+                            north=float(win_bounds[3]),
+                        )
+                        target_width = max(1, int(round(window.width)))
+                        target_height = max(1, int(round(window.height)))
+                    else:
+                        window = None
+
+                if window is None:
+                    bounds = vrt_r.bounds
+                    geo_bounds = GeoBounds(
+                        west=float(bounds.left),
+                        south=float(bounds.bottom),
+                        east=float(bounds.right),
+                        north=float(bounds.top),
+                    )
+                    target_width = vrt_r.width
+                    target_height = vrt_r.height
+
+                # Determine output grid dimensions respecting aspect ratio.
+                # If windowed AOI is smaller than max_dimension, preserve 100% native resolution
+                # without artificial enlargement, bilinear smearing, or upsampling.
+                if window is not None and target_width <= max_dimension and target_height <= max_dimension:
+                    out_w = target_width
+                    out_h = target_height
+                    read_kwargs = {"window": window}
                 else:
-                    out_w = max(1, int(max_dimension * aspect))
-                    out_h = max_dimension
+                    aspect = target_width / max(1, target_height)
+                    if aspect >= 1.0:
+                        out_w = max_dimension
+                        out_h = max(1, int(round(max_dimension / aspect)))
+                    else:
+                        out_w = max(1, int(round(max_dimension * aspect)))
+                        out_h = max_dimension
+                    read_kwargs = {"out_shape": (out_h, out_w), "resampling": Resampling.bilinear}
+                    if window is not None:
+                        read_kwargs["window"] = window
 
-                # Read downsampled 2D arrays from each warped band
-                r_arr = vrt_r.read(1, out_shape=(out_h, out_w), resampling=Resampling.bilinear)
-                g_arr = vrt_g.read(1, out_shape=(out_h, out_w), resampling=Resampling.bilinear)
-                b_arr = vrt_b.read(1, out_shape=(out_h, out_w), resampling=Resampling.bilinear)
+                r_arr = vrt_r.read(1, **read_kwargs)
+                g_arr = vrt_g.read(1, **read_kwargs)
+                b_arr = vrt_b.read(1, **read_kwargs)
 
                 # Identify valid pixels: finite, not nodata, and positive
                 # In Sentinel-2 L2A surface reflectance, 0 is typically nodata / off-swath

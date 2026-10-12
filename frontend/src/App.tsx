@@ -7,6 +7,44 @@ import { SatellitePage } from './pages/SatellitePage';
 import { MapPage } from './pages/MapPage';
 import { checkHealth, HealthStatus } from './api';
 
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error('ErrorBoundary caught error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '2rem', textAlign: 'center', backgroundColor: '#fef2f2', border: '1px solid #f87171', margin: '1rem' }}>
+          <h3 style={{ color: '#991b1b', marginBottom: '0.5rem' }}>WORKSTATION RENDERING ERROR</h3>
+          <p style={{ color: '#7f1d1d', fontFamily: 'monospace', fontSize: '0.85rem' }}>
+            {this.state.error?.message || 'An unexpected error occurred while rendering the map workstation.'}
+          </p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{ marginTop: '1rem', padding: '0.5rem 1rem', cursor: 'pointer', backgroundColor: '#15803d', color: '#fff', border: 'none' }}
+          >
+            RETRY COMPONENT
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('map');
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'offline'>('checking');
@@ -43,7 +81,7 @@ export const App: React.FC = () => {
       <Header status={backendStatus} serviceInfo={healthData} />
       <Navigation currentTab={currentTab} onTabChange={setCurrentTab} />
 
-      <main style={styles.mainContent}>
+      <main style={currentTab === 'map' ? styles.mapMainContent : styles.mainContent}>
         {currentTab === 'overview' && (
           <Dashboard
             status={backendStatus}
@@ -52,7 +90,11 @@ export const App: React.FC = () => {
             onRefresh={fetchStatus}
           />
         )}
-        {currentTab === 'map' && <MapPage />}
+        {currentTab === 'map' && (
+          <ErrorBoundary>
+            <MapPage />
+          </ErrorBoundary>
+        )}
         {currentTab === 'discovery' && <DiscoveryPage />}
         {currentTab === 'satellite' && <SatellitePage />}
         {currentTab === 'catalog' && (
@@ -94,6 +136,18 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: '1280px',
     width: '100%',
     margin: '0 auto',
+  },
+  mapMainContent: {
+    flex: 1,
+    width: '100%',
+    height: 'calc(100vh - 125px)',
+    minHeight: '600px',
+    display: 'flex',
+    flexDirection: 'column',
+    position: 'relative',
+    overflow: 'hidden',
+    padding: 0,
+    margin: 0,
   },
   placeholderCard: {
     backgroundColor: 'var(--color-surface)',
