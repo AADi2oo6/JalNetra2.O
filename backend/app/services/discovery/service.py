@@ -1,13 +1,14 @@
+import json
 import logging
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.models.water_body import WaterBody
 from app.db.repositories.water_body_repository import WaterBodyRepository
-from app.schemas.water_body import WaterBodyCreate
+from app.schemas.water_body import WaterBodyCreate, WaterBodyRead
 from app.services.discovery.base import WaterBodyProvider
 from app.services.discovery.cache import DiscoveryCacheService
 from app.services.discovery.models import (
@@ -19,6 +20,9 @@ from app.services.discovery.models import (
     SearchCenter,
     SearchBoundingBox,
     AreaDiscoveryResponse,
+    BatchImportRequest,
+    BatchImportItemResult,
+    BatchImportResponse,
 )
 from app.services.discovery.providers.osm import OpenStreetMapProvider
 
@@ -326,25 +330,104 @@ class WaterBodyDiscoveryService:
 
         return unique_list
 
-    def import_water_body(self, result: WaterBodyDiscoveryResult) -> WaterBody:
+    def _enrich_discovery_geometry(self, result: WaterBodyDiscoveryResult) -> WaterBodyDiscoveryResult:
+        """
+        Ensures bounding box, centroid, and area are populated from geometry_geojson
+        if omitted by the discovery provider payload.
+        """
+        if result.geometry_geojson and (
+            result.min_lat is None
+            or result.max_lat is None
+            or result.centroid_lat is None
+            or result.centroid_lon is None
+        ):
+            try:
+                geom = json.loads(result.geometry_geojson)
+                coords: List[List[float]] = []
+
+                def _extract_coords(obj):
+                    if isinstance(obj, list):
+                        if (
+                            len(obj) == 2
+                            and isinstance(obj[0], (int, float))
+                            and isinstance(obj[1], (int, float))
+                        ):
+                            coords.append(obj)
+                        else:
+                            for sub in obj:
+                                _extract_coords(sub)
+
+                _extract_coords(geom.get("coordinates", []))
+                if coords:
+                    lons = [c[0] for c in coords]
+                    lats = [c[1] for c in coords]
+                    min_lon, max_lon = min(lons), max(lons)
+                    min_lat, max_lat = min(lats), max(lats)
+
+                    if result.min_lat is None:
+                        result.min_lat = round(min_lat, 6)
+                    if result.max_lat is None:
+                        result.max_lat = round(max_lat, 6)
+                    if result.min_lon is None:
+                        result.min_lon = round(min_lon, 6)
+                    if result.max_lon is None:
+                        result.max_lon = round(max_lon, 6)
+                    if result.centroid_lat is None:
+                        result.centroid_lat = round((min_lat + max_lat) / 2.0, 6)
+                    if result.centroid_lon is None:
+                        result.centroid_lon = round((min_lon + max_lon) / 2.0, 6)
+                    if result.area_sq_km is None:
+                        d_lat = abs(max_lat - min_lat) * 111.0
+                        mid_lat = (min_lat + max_lat) / 2.0
+                        d_lon = abs(max_lon - min_lon) * 111.0 * math.cos(math.radians(mid_lat))
+                        result.area_sq_km = round(d_lat * d_lon, 4)
+            except Exception as exc:
+                logger.debug("Could not derive geometry coordinates from GeoJSON: %s", exc)
+
+        # Fallback bounds from centroid or vice versa
+        if result.min_lat is None and result.centroid_lat is not None:
+            result.min_lat = result.max_lat = result.centroid_lat
+        if result.min_lon is None and result.centroid_lon is not None:
+            result.min_lon = result.max_lon = result.centroid_lon
+        if result.centroid_lat is None and result.min_lat is not None and result.max_lat is not None:
+            result.centroid_lat = round((result.min_lat + result.max_lat) / 2.0, 6)
+        if result.centroid_lon is None and result.min_lon is not None and result.max_lon is not None:
+            result.centroid_lon = round((result.min_lon + result.max_lon) / 2.0, 6)
+
+        return result
+
+    def import_water_body_with_status(
+        self, result: WaterBodyDiscoveryResult
+    ) -> Tuple[WaterBody, bool]:
         """
         Converts a validated WaterBodyDiscoveryResult into a stored WaterBody.
         Guarantees idempotency: returns existing record if already imported.
+        Returns: (water_body, is_newly_created)
         """
+        result = self._enrich_discovery_geometry(result)
+
         # Signal 1: Check existing by (source, source_id)
         if result.source_id:
             existing = self.repo.get_by_source_and_source_id(result.provider, result.source_id)
             if existing:
-                logger.info("WaterBody already exists for source %s/%s", result.provider, result.source_id)
-                return existing
+                logger.info(
+                    "WaterBody already exists for source %s/%s (%s)",
+                    result.provider,
+                    result.source_id,
+                    existing.id,
+                )
+                return existing, False
 
         # Signal 2: Check existing by geometry hash
         if result.geometry_hash:
             stmt = select(WaterBody).where(WaterBody.geometry_hash == result.geometry_hash)
             existing_by_hash = self.db.execute(stmt).scalar_one_or_none()
             if existing_by_hash:
-                logger.info("WaterBody with identical geometry hash already exists (%s)", existing_by_hash.id)
-                return existing_by_hash
+                logger.info(
+                    "WaterBody with identical geometry hash already exists (%s)",
+                    existing_by_hash.id,
+                )
+                return existing_by_hash, False
 
         # Signal 3: Check by normalized name and close proximity centroid (< 2km)
         norm_name = result.name.strip().lower()
@@ -363,8 +446,13 @@ class WaterBodyDiscoveryService:
                         c.centroid_lon,
                     )
                     if dist_km < 2.0:
-                        logger.info("WaterBody '%s' matches existing body within %.2f km (%s)", norm_name, dist_km, c.id)
-                        return c
+                        logger.info(
+                            "WaterBody '%s' matches existing body within %.2f km (%s)",
+                            norm_name,
+                            dist_km,
+                            c.id,
+                        )
+                        return c, False
 
         # Create new record
         dto = WaterBodyCreate(
@@ -387,7 +475,68 @@ class WaterBodyDiscoveryService:
             area_sq_km=result.area_sq_km,
             is_active=True,
         )
-        return self.repo.create(dto)
+        created_wb = self.repo.create(dto)
+        return created_wb, True
+
+    def import_water_body(self, result: WaterBodyDiscoveryResult) -> WaterBody:
+        """
+        Converts a validated WaterBodyDiscoveryResult into a stored WaterBody.
+        Guarantees idempotency: returns existing record if already imported.
+        """
+        wb, _ = self.import_water_body_with_status(result)
+        return wb
+
+    def import_water_bodies_batch(
+        self, payload: BatchImportRequest
+    ) -> BatchImportResponse:
+        """
+        Imports multiple discovered water bodies in a single request.
+        Reports counts of newly imported, already existing, and failed items.
+        Idempotent and isolated from satellite acquisition.
+        """
+        results: List[BatchImportItemResult] = []
+        imported_count = 0
+        already_existed_count = 0
+        failed_count = 0
+
+        for item in payload.water_bodies:
+            try:
+                wb, created = self.import_water_body_with_status(item)
+                status_str = "imported" if created else "already_registered"
+                if created:
+                    imported_count += 1
+                else:
+                    already_existed_count += 1
+
+                results.append(
+                    BatchImportItemResult(
+                        source_id=item.source_id,
+                        name=item.name,
+                        status=status_str,
+                        water_body=WaterBodyRead.model_validate(wb),
+                        error=None,
+                    )
+                )
+            except Exception as exc:
+                logger.error("Failed to batch-import %s (%s): %s", item.name, item.source_id, exc)
+                failed_count += 1
+                results.append(
+                    BatchImportItemResult(
+                        source_id=item.source_id,
+                        name=item.name,
+                        status="failed",
+                        water_body=None,
+                        error=str(exc),
+                    )
+                )
+
+        return BatchImportResponse(
+            total_requested=len(payload.water_bodies),
+            imported_count=imported_count,
+            already_existed_count=already_existed_count,
+            failed_count=failed_count,
+            results=results,
+        )
 
     @staticmethod
     def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

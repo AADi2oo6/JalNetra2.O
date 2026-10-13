@@ -191,6 +191,22 @@ export interface AreaDiscoveryResponse {
   results: WaterBodyDiscoveryResult[];
 }
 
+export interface BatchImportItemResult {
+  source_id: string;
+  name: string;
+  status: 'imported' | 'already_registered' | 'failed';
+  water_body?: WaterBody | null;
+  error?: string | null;
+}
+
+export interface BatchImportResponse {
+  total_requested: number;
+  imported_count: number;
+  already_existed_count: number;
+  failed_count: number;
+  results: BatchImportItemResult[];
+}
+
 // Phase 3: Satellite STAC Models
 export interface NormalizedAsset {
   asset_key: string;
@@ -395,6 +411,20 @@ export async function importDiscoveredWaterBody(
     body: JSON.stringify(result),
   });
   return handleResponse<WaterBody>(response);
+}
+
+export async function importWaterBodiesBatch(
+  waterBodies: WaterBodyDiscoveryResult[]
+): Promise<BatchImportResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/discovery/water-bodies/import-batch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({ water_bodies: waterBodies }),
+  });
+  return handleResponse<BatchImportResponse>(response);
 }
 
 export async function getDiscoveryProviders(): Promise<ProviderListResponse> {

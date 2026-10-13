@@ -10,6 +10,9 @@ from app.services.discovery.models import (
     SearchCenter,
     SearchBoundingBox,
     AreaDiscoveryResponse,
+    BatchImportRequest,
+    BatchImportItemResult,
+    BatchImportResponse,
 )
 from app.services.discovery.service import (
     WaterBodyDiscoveryService,
@@ -27,6 +30,9 @@ __all__ = [
     "SearchCenter",
     "SearchBoundingBox",
     "AreaDiscoveryResponse",
+    "BatchImportRequest",
+    "BatchImportItemResult",
+    "BatchImportResponse",
     "WaterBodyDiscoveryService",
     "DiscoveryProviderError",
 ]

@@ -12,6 +12,8 @@ from app.services.discovery import (
     ProviderStatus,
     LocationSearchResponse,
     AreaDiscoveryResponse,
+    BatchImportRequest,
+    BatchImportResponse,
 )
 
 router = APIRouter(prefix="/discovery", tags=["Discovery"])
@@ -98,3 +100,18 @@ def import_water_body(
     service: WaterBodyDiscoveryService = Depends(get_discovery_service),
 ) -> WaterBodyRead:
     return service.import_water_body(payload)
+
+
+@router.post(
+    "/water-bodies/import-batch",
+    response_model=BatchImportResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Batch import multiple discovered water bodies into local catalog",
+    description="Idempotently registers a list of discovered water bodies into the local SQLite database.",
+)
+def import_water_bodies_batch(
+    payload: BatchImportRequest,
+    service: WaterBodyDiscoveryService = Depends(get_discovery_service),
+) -> BatchImportResponse:
+    return service.import_water_bodies_batch(payload)
+

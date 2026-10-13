@@ -29,6 +29,7 @@ import {
   searchLocation,
   discoverWaterBodiesByArea,
   importDiscoveredWaterBody,
+  importWaterBodiesBatch,
   MapSceneItem,
   SceneRasterMetadata,
   RGBVisualizationData,
@@ -234,6 +235,7 @@ export const MapPage: React.FC = () => {
   const [selectedLocation, setSelectedLocation] = useState<GeocodedLocation | null>(null);
   const [areaDiscoveryData, setAreaDiscoveryData] = useState<AreaDiscoveryResponse | null>(null);
   const [selectedDiscoveredWb, setSelectedDiscoveredWb] = useState<WaterBodyDiscoveryResult | null>(null);
+  const [selectedForImportIds, setSelectedForImportIds] = useState<Set<string>>(new Set());
   const [registeredSourceIds, setRegisteredSourceIds] = useState<Set<string>>(new Set());
 
   // ── Derived per-scene data ────────────────────────────────────────────────────
@@ -437,6 +439,8 @@ export const MapPage: React.FC = () => {
         query || loc.display_name
       );
       setAreaDiscoveryData(areaRes);
+      setSelectedForImportIds(new Set());
+      setSelectedDiscoveredWb(null);
 
       // Fit map to discovery area
       if (areaRes.bounding_box) {
@@ -466,7 +470,7 @@ export const MapPage: React.FC = () => {
       if (areaRes.total_discovered === 0) {
         setDiscoverySuccess(`No water bodies found within ${radiusToUse} km of ${cityName}. Try increasing the radius to 5 km or 10 km.`);
       } else {
-        setDiscoverySuccess(`Discovered ${areaRes.total_discovered} water bodies within ${radiusToUse} km of ${cityName}. Click any water body on the map or list to inspect and add to JalNetra.`);
+        setDiscoverySuccess(`Discovered ${areaRes.total_discovered} water bodies within ${radiusToUse} km of ${cityName}. Select one or multiple to review and import into JalNetra.`);
       }
     } catch (err: any) {
       console.error('Area discovery failed:', err);
@@ -483,6 +487,50 @@ export const MapPage: React.FC = () => {
     }
   }, [discoveryQuery, discoveryRadiusKm]);
 
+  // ─── Phase 3: Spatial distance calculation helpers ────────────────────────────
+  const calculateDistanceKm = useCallback((lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const r = 6371.0;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180.0;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180.0;
+    const a =
+      Math.sin(dLat / 2.0) ** 2 +
+      Math.cos((lat1 * Math.PI) / 180.0) *
+        Math.cos((lat2 * Math.PI) / 180.0) *
+        Math.sin(dLon / 2.0) ** 2;
+    const c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a));
+    return r * c;
+  }, []);
+
+  const formatDistance = useCallback((distKm: number): string => {
+    if (distKm < 1.0) {
+      return `${Math.round(distKm * 1000)} m`;
+    }
+    return `${distKm.toFixed(2)} km`;
+  }, []);
+
+  // ─── Phase 3: Selection management ───────────────────────────────────────────
+  const toggleSelectForImport = useCallback((sourceId: string) => {
+    setSelectedForImportIds(prev => {
+      const next = new Set(prev);
+      if (next.has(sourceId)) {
+        next.delete(sourceId);
+      } else {
+        next.add(sourceId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSelectAllUnregistered = useCallback(() => {
+    if (!areaDiscoveryData?.results) return;
+    const unregistered = areaDiscoveryData.results.filter(wb => !isWbRegistered(wb));
+    setSelectedForImportIds(new Set(unregistered.map(wb => wb.source_id)));
+  }, [areaDiscoveryData, isWbRegistered]);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedForImportIds(new Set());
+  }, []);
+
   const handleRegisterWaterBody = useCallback(async (wb: WaterBodyDiscoveryResult) => {
     setIsRegisteringWb(true);
     setOpProgress({
@@ -495,6 +543,11 @@ export const MapPage: React.FC = () => {
     try {
       const registered = await importDiscoveredWaterBody(wb);
       setRegisteredSourceIds(prev => new Set(prev).add(String(wb.source_id)));
+      setSelectedForImportIds(prev => {
+        const next = new Set(prev);
+        next.delete(wb.source_id);
+        return next;
+      });
 
       // Refresh water body vectors
       const freshGeoJson = await getWaterBodiesGeoJson();
@@ -523,6 +576,83 @@ export const MapPage: React.FC = () => {
       setIsRegisteringWb(false);
     }
   }, [handleSelectWaterBody]);
+
+  // ─── Phase 3: Deliberate Batch Import ─────────────────────────────────────────
+  const handleBatchImport = useCallback(async () => {
+    if (!areaDiscoveryData?.results || selectedForImportIds.size === 0) return;
+    const itemsToImport = areaDiscoveryData.results.filter(wb => selectedForImportIds.has(wb.source_id));
+    if (itemsToImport.length === 0) return;
+
+    setIsRegisteringWb(true);
+    setOpProgress({
+      active: true,
+      stage: `Importing ${itemsToImport.length} water bodies...`,
+      detail: `Registering selected water bodies into local database`,
+      percent: 45,
+    });
+    setDiscoveryError(null);
+
+    try {
+      const batchRes = await importWaterBodiesBatch(itemsToImport);
+
+      // Update registered source IDs with any imported or already registered items
+      const newRegisteredIds = new Set(registeredSourceIds);
+      batchRes.results.forEach(item => {
+        if (item.status === 'imported' || item.status === 'already_registered') {
+          newRegisteredIds.add(item.source_id);
+        }
+      });
+      setRegisteredSourceIds(newRegisteredIds);
+
+      // Remove successfully processed items from selection
+      setSelectedForImportIds(prev => {
+        const next = new Set(prev);
+        batchRes.results.forEach(item => {
+          if (item.status === 'imported' || item.status === 'already_registered') {
+            next.delete(item.source_id);
+          }
+        });
+        return next;
+      });
+
+      // Refresh water body vectors
+      const freshGeoJson = await getWaterBodiesGeoJson();
+      setGeoJsonData(freshGeoJson);
+
+      // Auto-select the first successfully imported water body if available
+      const firstSuccessful = batchRes.results.find(r => r.water_body && r.status === 'imported')?.water_body;
+      if (firstSuccessful) {
+        handleSelectWaterBody(firstSuccessful.id, firstSuccessful, freshGeoJson);
+      }
+
+      setOpProgress({
+        active: false,
+        stage: 'Batch import complete ✓',
+        detail: `${batchRes.imported_count} added, ${batchRes.already_existed_count} already existed, ${batchRes.failed_count} failed. Zero satellite scenes acquired.`,
+        percent: 100,
+      });
+
+      let summaryMsg = `✓ ${batchRes.imported_count} water ${batchRes.imported_count === 1 ? 'body' : 'bodies'} added to JalNetra!`;
+      if (batchRes.already_existed_count > 0) {
+        summaryMsg += ` (${batchRes.already_existed_count} were already registered)`;
+      }
+      if (batchRes.failed_count > 0) {
+        summaryMsg += ` (${batchRes.failed_count} failed)`;
+      }
+      setDiscoverySuccess(summaryMsg);
+    } catch (err: any) {
+      console.error('Batch import failed:', err);
+      setDiscoveryError(err.message || 'Batch import failed');
+      setOpProgress({
+        active: false,
+        stage: 'Batch import failed ✕',
+        detail: err.message,
+        error: err.message,
+      });
+    } finally {
+      setIsRegisteringWb(false);
+    }
+  }, [areaDiscoveryData, selectedForImportIds, registeredSourceIds, handleSelectWaterBody]);
 
   const handleSelectScene = useCallback(async (
     sceneItem: MapSceneItem,
@@ -1108,7 +1238,7 @@ export const MapPage: React.FC = () => {
             </CircleMarker>
           )}
 
-          {/* Phase 2: Discovered Water Bodies Overlays */}
+          {/* Phase 2/3: Discovered Water Bodies Overlays with Selection Highlight */}
           {areaDiscoveryData?.results?.map((wb, idx) => {
             let parsedGeo = null;
             if (wb.geometry_geojson) {
@@ -1118,19 +1248,23 @@ export const MapPage: React.FC = () => {
             }
             const isRegistered = isWbRegistered(wb);
             const isSelected = selectedDiscoveredWb?.source_id === wb.source_id;
+            const isSelectedForImport = selectedForImportIds.has(wb.source_id);
+            const distFromCenter = (wb.centroid_lat != null && wb.centroid_lon != null && areaDiscoveryData.center)
+              ? calculateDistanceKm(areaDiscoveryData.center.latitude, areaDiscoveryData.center.longitude, wb.centroid_lat, wb.centroid_lon)
+              : null;
 
             return (
               <React.Fragment key={`disc-${wb.source_id || idx}`}>
                 {parsedGeo && (
                   <GeoJSON
-                    key={`disc-poly-${wb.source_id}-${isSelected ? 'sel' : 'unsel'}`}
+                    key={`disc-poly-${wb.source_id}-${isSelectedForImport ? 'importsel' : isSelected ? 'sel' : 'unsel'}`}
                     data={parsedGeo}
                     style={{
-                      color: isSelected ? '#0284c7' : '#0891b2',
-                      weight: isSelected ? 3 : 2,
-                      dashArray: '4 4',
-                      fillColor: isSelected ? '#38bdf8' : '#22d3ee',
-                      fillOpacity: isSelected ? 0.35 : 0.16,
+                      color: isSelectedForImport ? '#2563eb' : isSelected ? '#0284c7' : isRegistered ? '#16a34a' : '#0891b2',
+                      weight: isSelectedForImport ? 3.5 : isSelected ? 3 : 2,
+                      dashArray: isSelectedForImport ? undefined : '4 4',
+                      fillColor: isSelectedForImport ? '#38bdf8' : isSelected ? '#38bdf8' : isRegistered ? '#4ade80' : '#22d3ee',
+                      fillOpacity: isSelectedForImport ? 0.45 : isSelected ? 0.35 : 0.16,
                     }}
                     eventHandlers={{
                       click: () => setSelectedDiscoveredWb(wb),
@@ -1141,19 +1275,19 @@ export const MapPage: React.FC = () => {
                 {wb.centroid_lat != null && wb.centroid_lon != null && (
                   <CircleMarker
                     center={[wb.centroid_lat, wb.centroid_lon]}
-                    radius={isSelected ? 8 : 6}
+                    radius={isSelectedForImport ? 9 : isSelected ? 8 : 6}
                     pathOptions={{
-                      color: isRegistered ? '#15803d' : isSelected ? '#0284c7' : '#0891b2',
-                      fillColor: isRegistered ? '#22c55e' : isSelected ? '#38bdf8' : '#06b6d4',
-                      fillOpacity: 0.9,
-                      weight: 2,
+                      color: isSelectedForImport ? '#1d4ed8' : isRegistered ? '#15803d' : isSelected ? '#0284c7' : '#0891b2',
+                      fillColor: isSelectedForImport ? '#60a5fa' : isRegistered ? '#22c55e' : isSelected ? '#38bdf8' : '#06b6d4',
+                      fillOpacity: 0.95,
+                      weight: isSelectedForImport ? 3 : 2,
                     }}
                     eventHandlers={{
                       click: () => setSelectedDiscoveredWb(wb),
                     }}
                   >
                     <Popup>
-                      <div style={{ fontFamily: 'sans-serif', fontSize: '12px', minWidth: '190px' }}>
+                      <div style={{ fontFamily: 'sans-serif', fontSize: '12px', minWidth: '210px' }}>
                         <div style={{ fontWeight: 700, fontSize: '13px', color: '#0f172a', marginBottom: '4px' }}>
                           {wb.name || 'Unnamed Water Body'}
                         </div>
@@ -1163,6 +1297,11 @@ export const MapPage: React.FC = () => {
                         <div style={{ color: '#475569', fontSize: '11px', marginBottom: '2px' }}>
                           <b>Area:</b> {wb.area_sq_km ? `${wb.area_sq_km.toFixed(2)} km²` : 'N/A'}
                         </div>
+                        {distFromCenter != null && (
+                          <div style={{ color: '#0284c7', fontSize: '11px', marginBottom: '2px', fontWeight: 600 }}>
+                            <b>Distance:</b> {formatDistance(distFromCenter)} from center
+                          </div>
+                        )}
                         <div style={{ color: '#64748b', fontSize: '10px', marginBottom: '8px' }}>
                           <b>Source:</b> {wb.provider} ({wb.source_id})
                         </div>
@@ -1179,23 +1318,49 @@ export const MapPage: React.FC = () => {
                             ✓ IN JALNETRA
                           </div>
                         ) : (
-                          <button
-                            style={{
-                              width: '100%',
-                              padding: '6px 10px',
-                              backgroundColor: '#0284c7',
-                              color: '#ffffff',
-                              border: 'none',
-                              borderRadius: '3px',
-                              cursor: 'pointer',
-                              fontWeight: 700,
-                              fontSize: '11px',
-                            }}
-                            disabled={isRegisteringWb}
-                            onClick={() => handleRegisterWaterBody(wb)}
-                          >
-                            {isRegisteringWb && selectedDiscoveredWb?.source_id === wb.source_id ? 'ADDING...' : '+ ADD TO JALNETRA'}
-                          </button>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                            <button
+                              type="button"
+                              style={{
+                                width: '100%',
+                                padding: '5px 8px',
+                                backgroundColor: isSelectedForImport ? '#dbeafe' : '#f1f5f9',
+                                color: isSelectedForImport ? '#1d4ed8' : '#334155',
+                                border: isSelectedForImport ? '1px solid #3b82f6' : '1px solid #cbd5e1',
+                                borderRadius: '3px',
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                fontSize: '11px',
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelectForImport(wb.source_id);
+                              }}
+                            >
+                              {isSelectedForImport ? '✓ SELECTED FOR IMPORT' : '☑ SELECT FOR IMPORT'}
+                            </button>
+                            <button
+                              type="button"
+                              style={{
+                                width: '100%',
+                                padding: '6px 10px',
+                                backgroundColor: '#0284c7',
+                                color: '#ffffff',
+                                border: 'none',
+                                borderRadius: '3px',
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                fontSize: '11px',
+                              }}
+                              disabled={isRegisteringWb}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRegisterWaterBody(wb);
+                              }}
+                            >
+                              {isRegisteringWb && selectedDiscoveredWb?.source_id === wb.source_id ? 'ADDING...' : '+ ADD DIRECTLY TO JALNETRA'}
+                            </button>
+                          </div>
                         )}
                       </div>
                     </Popup>
@@ -1455,6 +1620,7 @@ export const MapPage: React.FC = () => {
                         onClick={() => {
                           setAreaDiscoveryData(null);
                           setSelectedDiscoveredWb(null);
+                          setSelectedForImportIds(new Set());
                           setMatchedLocations([]);
                           setSelectedLocation(null);
                           setDiscoverySuccess(null);
@@ -1470,6 +1636,55 @@ export const MapPage: React.FC = () => {
                       <div><strong>Radius:</strong> {areaDiscoveryData.radius_km} km</div>
                     </div>
 
+                    {/* Phase 3: Batch Selection Summary Bar */}
+                    {selectedForImportIds.size > 0 && (
+                      <div style={styles.selectionSummaryBar}>
+                        <div style={styles.selectionCountLabel}>
+                          <strong>{selectedForImportIds.size}</strong> WATER {selectedForImportIds.size === 1 ? 'BODY' : 'BODIES'} SELECTED FOR IMPORT
+                        </div>
+                        <div style={styles.selectionBarActions}>
+                          <button
+                            type="button"
+                            style={styles.batchImportBtn}
+                            disabled={isRegisteringWb}
+                            onClick={handleBatchImport}
+                          >
+                            {isRegisteringWb ? 'IMPORTING...' : `⬇ IMPORT SELECTED (${selectedForImportIds.size})`}
+                          </button>
+                          <button
+                            type="button"
+                            style={styles.clearSelectionBtn}
+                            onClick={handleClearSelection}
+                            disabled={isRegisteringWb}
+                          >
+                            CLEAR
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Phase 3: Quick Action Row */}
+                    {areaDiscoveryData.results.length > 0 && (
+                      <div style={styles.quickActionRow}>
+                        <button
+                          type="button"
+                          style={styles.quickActionBtn}
+                          onClick={handleSelectAllUnregistered}
+                        >
+                          Select All Unregistered
+                        </button>
+                        {selectedForImportIds.size > 0 && (
+                          <button
+                            type="button"
+                            style={styles.quickActionBtn}
+                            onClick={handleClearSelection}
+                          >
+                            Deselect All
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     <div style={styles.discoveredScrollList}>
                       {areaDiscoveryData.results.length === 0 ? (
                         <div style={styles.emptyResultsText}>
@@ -1479,12 +1694,17 @@ export const MapPage: React.FC = () => {
                         areaDiscoveryData.results.map((wb, idx) => {
                           const registered = isWbRegistered(wb);
                           const isSelected = selectedDiscoveredWb?.source_id === wb.source_id;
+                          const isSelectedForImport = selectedForImportIds.has(wb.source_id);
+                          const distFromCenter = (wb.centroid_lat != null && wb.centroid_lon != null && areaDiscoveryData.center)
+                            ? calculateDistanceKm(areaDiscoveryData.center.latitude, areaDiscoveryData.center.longitude, wb.centroid_lat, wb.centroid_lon)
+                            : null;
+
                           return (
                             <div
                               key={wb.source_id || idx}
                               style={{
                                 ...styles.discoveredCard,
-                                ...(isSelected ? styles.discoveredCardSelected : {}),
+                                ...(isSelectedForImport ? styles.discoveredCardImportSelected : isSelected ? styles.discoveredCardSelected : {}),
                               }}
                               onClick={() => {
                                 setSelectedDiscoveredWb(wb);
@@ -1498,29 +1718,59 @@ export const MapPage: React.FC = () => {
                               }}
                             >
                               <div style={styles.wbCardTitleRow}>
-                                <span style={styles.wbCardTitle}>{wb.name || 'Unnamed Water Body'}</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                                  {!registered ? (
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelectedForImport}
+                                      onChange={() => toggleSelectForImport(wb.source_id)}
+                                      onClick={e => e.stopPropagation()}
+                                      title="Select for batch import"
+                                      style={{ cursor: 'pointer', margin: 0 }}
+                                    />
+                                  ) : (
+                                    <span style={{ color: '#16a34a', fontSize: '0.75rem', fontWeight: 700 }} title="Already registered">✓</span>
+                                  )}
+                                  <span style={styles.wbCardTitle}>{wb.name || 'Unnamed Water Body'}</span>
+                                </div>
                                 <span style={styles.wbCardTypeBadge}>{wb.water_body_type || 'water'}</span>
                               </div>
 
                               <div style={styles.wbCardMetaRow}>
                                 <span>Area: {wb.area_sq_km ? `${wb.area_sq_km.toFixed(2)} km²` : 'N/A'}</span>
-                                <span>Provider: {wb.provider}</span>
+                                {distFromCenter != null && (
+                                  <span style={{ color: '#0284c7', fontWeight: 600 }}>{formatDistance(distFromCenter)} away</span>
+                                )}
+                                <span>{wb.provider}</span>
                               </div>
 
                               <div style={styles.wbCardActionRow}>
                                 {registered ? (
                                   <span style={styles.badgeAlreadyAdded}>✓ IN JALNETRA</span>
                                 ) : (
-                                  <button
-                                    style={styles.addWbBtn}
-                                    disabled={isRegisteringWb}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleRegisterWaterBody(wb);
-                                    }}
-                                  >
-                                    {isRegisteringWb && selectedDiscoveredWb?.source_id === wb.source_id ? 'ADDING...' : '+ ADD TO JALNETRA'}
-                                  </button>
+                                  <div style={{ display: 'flex', gap: '6px' }}>
+                                    <button
+                                      type="button"
+                                      style={isSelectedForImport ? styles.selectToggleBtnActive : styles.selectToggleBtn}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleSelectForImport(wb.source_id);
+                                      }}
+                                    >
+                                      {isSelectedForImport ? '✓ SELECTED' : '+ SELECT'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      style={styles.addWbBtn}
+                                      disabled={isRegisteringWb}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRegisterWaterBody(wb);
+                                      }}
+                                    >
+                                      {isRegisteringWb && selectedDiscoveredWb?.source_id === wb.source_id ? 'ADDING...' : '+ ADD TO JALNETRA'}
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -2931,5 +3181,82 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#cffafe',
     padding: '0.1rem 0.35rem',
     border: '1px solid #a5f3fc',
+  },
+  selectionSummaryBar: {
+    marginTop: '0.35rem',
+    padding: '0.45rem 0.5rem',
+    backgroundColor: '#eff6ff',
+    border: '1px solid #bfdbfe',
+    borderRadius: '2px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.35rem',
+  },
+  selectionCountLabel: {
+    fontSize: '0.68rem',
+    color: '#1e40af',
+    letterSpacing: '0.02em',
+  },
+  selectionBarActions: {
+    display: 'flex',
+    gap: '0.35rem',
+  },
+  batchImportBtn: {
+    flex: 1,
+    padding: '0.4rem',
+    backgroundColor: '#1d4ed8',
+    color: '#ffffff',
+    border: 'none',
+    fontWeight: 700,
+    fontSize: '0.66rem',
+    letterSpacing: '0.03em',
+    cursor: 'pointer',
+    textAlign: 'center' as const,
+  },
+  clearSelectionBtn: {
+    padding: '0.4rem 0.6rem',
+    backgroundColor: '#e2e8f0',
+    color: '#334155',
+    border: 'none',
+    fontWeight: 600,
+    fontSize: '0.64rem',
+    cursor: 'pointer',
+  },
+  quickActionRow: {
+    display: 'flex',
+    gap: '0.4rem',
+    marginTop: '0.3rem',
+    marginBottom: '0.1rem',
+  },
+  quickActionBtn: {
+    padding: '0.2rem 0.45rem',
+    backgroundColor: 'var(--color-surface-subtle)',
+    border: '1px solid var(--border-color)',
+    color: 'var(--color-text-secondary)',
+    fontSize: '0.62rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  selectToggleBtn: {
+    padding: '0.24rem 0.5rem',
+    backgroundColor: '#f1f5f9',
+    color: '#334155',
+    border: '1px solid #cbd5e1',
+    fontWeight: 600,
+    fontSize: '0.62rem',
+    cursor: 'pointer',
+  },
+  selectToggleBtnActive: {
+    padding: '0.24rem 0.5rem',
+    backgroundColor: '#dbeafe',
+    color: '#1d4ed8',
+    border: '1px solid #3b82f6',
+    fontWeight: 700,
+    fontSize: '0.62rem',
+    cursor: 'pointer',
+  },
+  discoveredCardImportSelected: {
+    borderColor: '#2563eb',
+    backgroundColor: '#eff6ff',
   },
 };

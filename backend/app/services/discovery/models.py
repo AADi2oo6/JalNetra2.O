@@ -2,6 +2,7 @@ import hashlib
 import json
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
+from app.schemas.water_body import WaterBodyRead
 
 
 def compute_geometry_hash_from_dict(geom: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -119,4 +120,34 @@ class AreaDiscoveryResponse(BaseModel):
     bounding_box: SearchBoundingBox
     total_discovered: int
     results: List[WaterBodyDiscoveryResult]
+
+
+class BatchImportRequest(BaseModel):
+    water_bodies: List[WaterBodyDiscoveryResult] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="List of discovered water bodies to import",
+    )
+    water_body_ids: Optional[List[str]] = Field(
+        None,
+        description="Optional list of source IDs corresponding to the items",
+    )
+
+
+class BatchImportItemResult(BaseModel):
+    source_id: str
+    name: str
+    status: str = Field(..., description="'imported' | 'already_registered' | 'failed'")
+    water_body: Optional[WaterBodyRead] = None
+    error: Optional[str] = None
+
+
+class BatchImportResponse(BaseModel):
+    total_requested: int
+    imported_count: int
+    already_existed_count: int
+    failed_count: int
+    results: List[BatchImportItemResult]
+
 
