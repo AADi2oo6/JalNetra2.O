@@ -85,3 +85,38 @@ class ProviderStatus(BaseModel):
 
 class ProviderListResponse(BaseModel):
     providers: List[ProviderStatus]
+
+
+class GeocodedLocation(BaseModel):
+    display_name: str
+    latitude: float
+    longitude: float
+    type: Optional[str] = None
+    boundingbox: Optional[List[float]] = None
+
+
+class LocationSearchResponse(BaseModel):
+    query: str
+    results: List[GeocodedLocation]
+
+
+class SearchCenter(BaseModel):
+    latitude: float
+    longitude: float
+
+
+class SearchBoundingBox(BaseModel):
+    min_lat: float
+    min_lon: float
+    max_lat: float
+    max_lon: float
+
+
+class AreaDiscoveryResponse(BaseModel):
+    query_location: Optional[str] = None
+    center: SearchCenter
+    radius_km: float
+    bounding_box: SearchBoundingBox
+    total_discovered: int
+    results: List[WaterBodyDiscoveryResult]
+

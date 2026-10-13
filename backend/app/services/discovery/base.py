@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List
-from app.services.discovery.models import WaterBodyDiscoveryResult
+from app.services.discovery.models import WaterBodyDiscoveryResult, GeocodedLocation
 
 
 class WaterBodyProvider(ABC):
@@ -36,5 +36,29 @@ class WaterBodyProvider(ABC):
     async def check_health(self) -> bool:
         """
         Lightweight health/readiness check for the provider.
+        """
+        pass
+
+    @abstractmethod
+    async def geocode_location(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> List[GeocodedLocation]:
+        """
+        Geocode a location query string into geographic coordinates.
+        """
+        pass
+
+    @abstractmethod
+    async def search_area(
+        self,
+        latitude: float,
+        longitude: float,
+        radius_km: float,
+        limit: int = 30,
+    ) -> List[WaterBodyDiscoveryResult]:
+        """
+        Search for water bodies within a given radius (km) of a coordinate.
         """
         pass

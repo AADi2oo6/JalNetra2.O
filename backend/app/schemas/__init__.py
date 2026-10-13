@@ -44,17 +44,16 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
 
 
-class StorageDirectoryStatus(BaseModel):
-    path: str
-    exists: bool
-    is_directory: bool
-    file_count: int
-
-
-class StorageStatusResponse(BaseModel):
-    database: Dict[str, Any]
-    directories: Dict[str, str]
-    details: Dict[str, StorageDirectoryStatus]
+from app.schemas.storage import (
+    StorageDirectoryStatus,
+    StorageDatabaseCounts,
+    StorageFilesystemSizes,
+    StorageOrphansSummary,
+    StorageStatusResponse,
+    DatabaseResetSummary,
+    FilesystemResetSummary,
+    StorageResetResponse,
+)
 
 
 __all__ = [
@@ -62,7 +61,13 @@ __all__ = [
     "ErrorDetail",
     "ErrorResponse",
     "StorageDirectoryStatus",
+    "StorageDatabaseCounts",
+    "StorageFilesystemSizes",
+    "StorageOrphansSummary",
     "StorageStatusResponse",
+    "DatabaseResetSummary",
+    "FilesystemResetSummary",
+    "StorageResetResponse",
     "WaterBodyCreate",
     "WaterBodyUpdate",
     "WaterBodyRead",

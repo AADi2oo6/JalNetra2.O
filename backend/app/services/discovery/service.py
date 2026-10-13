@@ -14,6 +14,11 @@ from app.services.discovery.models import (
     WaterBodyDiscoveryResult,
     DiscoverySearchResponse,
     ProviderStatus,
+    GeocodedLocation,
+    LocationSearchResponse,
+    SearchCenter,
+    SearchBoundingBox,
+    AreaDiscoveryResponse,
 )
 from app.services.discovery.providers.osm import OpenStreetMapProvider
 
@@ -129,6 +134,148 @@ class WaterBodyDiscoveryService:
             query=query,
             provider=target_provider_name,
             results=deduped_results,
+        )
+
+    async def geocode_location(
+        self,
+        query: str,
+        limit: int = 5,
+        provider_name: Optional[str] = None,
+    ) -> LocationSearchResponse:
+        query = query.strip()
+        if not query:
+            return LocationSearchResponse(query="", results=[])
+
+        limit = min(max(1, limit), 10)
+        target_provider_name = (
+            provider_name or settings.WATERBODY_DISCOVERY_PROVIDER
+        ).lower()
+
+        if target_provider_name not in self.providers:
+            raise DiscoveryProviderError(
+                f"Discovery provider '{target_provider_name}' is not registered.",
+                code="UNKNOWN_PROVIDER",
+            )
+
+        provider = self.providers[target_provider_name]
+
+        # 1. Cache check
+        cache_key = f"geocode:{target_provider_name}:{query.lower()}:{limit}"
+        cached_raw = self.cache.get(cache_key)
+        if cached_raw is not None:
+            logger.info("Geocoding cache hit for '%s'", cache_key)
+            cached_results = [
+                GeocodedLocation.model_validate(item) for item in cached_raw
+            ]
+            return LocationSearchResponse(query=query, results=cached_results)
+
+        # 2. Query provider
+        logger.info("Geocoding query '%s' via '%s'", query, target_provider_name)
+        try:
+            results = await provider.geocode_location(query, limit=limit)
+        except Exception as exc:
+            logger.error("Geocoding failed for '%s': %s", query, exc)
+            raise DiscoveryProviderError(
+                f"Geocoding service is temporarily unavailable: {str(exc)}",
+                code="GEOCODING_UNAVAILABLE",
+            )
+
+        # 3. Cache results
+        cache_data = [item.model_dump() for item in results]
+        self.cache.set(cache_key, target_provider_name, query, cache_data)
+
+        return LocationSearchResponse(query=query, results=results)
+
+    async def search_area(
+        self,
+        latitude: float,
+        longitude: float,
+        radius_km: float = 1.0,
+        limit: int = 30,
+        query_location: Optional[str] = None,
+        provider_name: Optional[str] = None,
+    ) -> AreaDiscoveryResponse:
+        # Validate coordinates and radius
+        if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+            raise ValueError(f"Invalid latitude/longitude: ({latitude}, {longitude})")
+        if radius_km <= 0 or radius_km > 50.0:
+            raise ValueError("radius_km must be between 0.1 and 50.0")
+
+        limit = min(max(1, limit), 60)
+        target_provider_name = (
+            provider_name or settings.WATERBODY_DISCOVERY_PROVIDER
+        ).lower()
+
+        if target_provider_name not in self.providers:
+            raise DiscoveryProviderError(
+                f"Discovery provider '{target_provider_name}' is not registered.",
+                code="UNKNOWN_PROVIDER",
+            )
+
+        provider = self.providers[target_provider_name]
+
+        # Calculate bounding box
+        d_lat = radius_km / 111.0
+        d_lon = radius_km / (111.0 * max(0.01, math.cos(math.radians(latitude))))
+        bbox = SearchBoundingBox(
+            min_lat=round(latitude - d_lat, 6),
+            min_lon=round(longitude - d_lon, 6),
+            max_lat=round(latitude + d_lat, 6),
+            max_lon=round(longitude + d_lon, 6),
+        )
+
+        center = SearchCenter(
+            latitude=round(latitude, 6),
+            longitude=round(longitude, 6),
+        )
+
+        # 1. Cache check
+        cache_key = f"area:{target_provider_name}:{round(latitude, 4)}:{round(longitude, 4)}:{round(radius_km, 2)}:{limit}"
+        cached_raw = self.cache.get(cache_key)
+        if cached_raw is not None:
+            logger.info("Area discovery cache hit for '%s'", cache_key)
+            cached_results = [
+                WaterBodyDiscoveryResult.model_validate(item) for item in cached_raw
+            ]
+            return AreaDiscoveryResponse(
+                query_location=query_location,
+                center=center,
+                radius_km=radius_km,
+                bounding_box=bbox,
+                total_discovered=len(cached_results),
+                results=cached_results,
+            )
+
+        # 2. Query provider
+        logger.info(
+            "Querying area discovery (%s, %s, radius=%s km) via '%s'",
+            latitude, longitude, radius_km, target_provider_name,
+        )
+        try:
+            raw_results = await provider.search_area(
+                latitude, longitude, radius_km, limit=limit
+            )
+        except Exception as exc:
+            logger.error("Area discovery failed for (%s, %s): %s", latitude, longitude, exc)
+            raise DiscoveryProviderError(
+                f"Water-body discovery provider '{target_provider_name}' is temporarily unavailable: {str(exc)}",
+                code="DISCOVERY_PROVIDER_UNAVAILABLE",
+            )
+
+        # 3. Deduplicate
+        deduped = self.deduplicate_results(raw_results)
+
+        # 4. Cache
+        cache_data = [item.model_dump() for item in deduped]
+        self.cache.set(cache_key, target_provider_name, f"{latitude},{longitude}", cache_data)
+
+        return AreaDiscoveryResponse(
+            query_location=query_location,
+            center=center,
+            radius_km=radius_km,
+            bounding_box=bbox,
+            total_discovered=len(deduped),
+            results=deduped,
         )
 
     def deduplicate_results(

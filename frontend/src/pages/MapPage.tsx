@@ -6,6 +6,9 @@ import {
   ImageOverlay,
   useMap,
   Rectangle,
+  Circle,
+  CircleMarker,
+  Popup,
   useMapEvents,
 } from 'react-leaflet';
 import type L from 'leaflet';
@@ -23,11 +26,17 @@ import {
   getWaterMaskImageUrl,
   searchSatelliteScenes,
   acquireSceneAssets,
+  searchLocation,
+  discoverWaterBodiesByArea,
+  importDiscoveredWaterBody,
   MapSceneItem,
   SceneRasterMetadata,
   RGBVisualizationData,
   ProcessingStatusResponse,
   MaskVisualizationResponse,
+  WaterBodyDiscoveryResult,
+  AreaDiscoveryResponse,
+  GeocodedLocation,
 } from '../api/client';
 
 // ─── LocalStorage helpers ─────────────────────────────────────────────────────
@@ -210,8 +219,22 @@ export const MapPage: React.FC = () => {
   // ── UI ────────────────────────────────────────────────────────────────────────
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'layers' | 'scenes' | 'aoi'>('layers');
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'discovery' | 'layers' | 'scenes' | 'aoi'>('layers');
   const [metricsCollapsed, setMetricsCollapsed] = useState<boolean>(false);
+
+  // ── Discovery (Phase 2) ──────────────────────────────────────────────────────
+  const [discoveryQuery, setDiscoveryQuery] = useState<string>('');
+  const [discoveryRadiusKm, setDiscoveryRadiusKm] = useState<number>(1.0);
+  const [isSearchingLocation, setIsSearchingLocation] = useState<boolean>(false);
+  const [isDiscoveringArea, setIsDiscoveringArea] = useState<boolean>(false);
+  const [isRegisteringWb, setIsRegisteringWb] = useState<boolean>(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [discoverySuccess, setDiscoverySuccess] = useState<string | null>(null);
+  const [matchedLocations, setMatchedLocations] = useState<GeocodedLocation[]>([]);
+  const [selectedLocation, setSelectedLocation] = useState<GeocodedLocation | null>(null);
+  const [areaDiscoveryData, setAreaDiscoveryData] = useState<AreaDiscoveryResponse | null>(null);
+  const [selectedDiscoveredWb, setSelectedDiscoveredWb] = useState<WaterBodyDiscoveryResult | null>(null);
+  const [registeredSourceIds, setRegisteredSourceIds] = useState<Set<string>>(new Set());
 
   // ── Derived per-scene data ────────────────────────────────────────────────────
   const currentProc: PerSceneProcessing = selectedSceneId
@@ -276,6 +299,16 @@ export const MapPage: React.FC = () => {
         const target = savedFeature || firstFeature;
         // Use a ref to avoid stale closures - call select after data is set
         handleSelectWaterBody(target.properties.id, target.properties, data);
+      } else {
+        setSelectedWaterBodyId('');
+        setSelectedWaterBodyProps(null);
+        setSelectedSceneId('');
+        setSelectedSceneItem(null);
+        setSceneMetadata(null);
+        setRgbData(null);
+        setScenes([]);
+        try { localStorage.removeItem(LS_WB_KEY); } catch { /* ignore */ }
+        setActiveSidebarTab('discovery');
       }
     } catch (err: any) {
       setError(err.message || 'Failed to load water body map data');
@@ -335,6 +368,161 @@ export const MapPage: React.FC = () => {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [geoJsonData, autoPaddingPct, computeBoundsFromProps]);
+
+  // ─── Phase 2: Sync registered water bodies source IDs ─────────────────────────
+  useEffect(() => {
+    if (geoJsonData?.features) {
+      const ids = new Set<string>();
+      geoJsonData.features.forEach((f: any) => {
+        if (f.properties?.source_id) ids.add(String(f.properties.source_id));
+      });
+      setRegisteredSourceIds(ids);
+    }
+  }, [geoJsonData]);
+
+  const isWbRegistered = useCallback((wb: WaterBodyDiscoveryResult) => {
+    if (wb.source_id && registeredSourceIds.has(String(wb.source_id))) return true;
+    if (!geoJsonData?.features) return false;
+    return geoJsonData.features.some((f: any) =>
+      (f.properties?.source_id && String(f.properties.source_id) === String(wb.source_id)) ||
+      (f.properties?.name && wb.name && f.properties.name.trim().toLowerCase() === wb.name.trim().toLowerCase())
+    );
+  }, [registeredSourceIds, geoJsonData]);
+
+  const handleExecuteAreaSearch = useCallback(async (overrideLoc?: GeocodedLocation, overrideRadius?: number) => {
+    const query = discoveryQuery.trim();
+    if (!overrideLoc && !query) {
+      setDiscoveryError('Please enter a location name (e.g. Delhi, Pune, Nagpur, Ooty)');
+      return;
+    }
+    setDiscoveryError(null);
+    setDiscoverySuccess(null);
+    setIsSearchingLocation(true);
+    setIsDiscoveringArea(true);
+    const radiusToUse = overrideRadius !== undefined ? overrideRadius : discoveryRadiusKm;
+
+    setOpProgress({
+      active: true,
+      stage: overrideLoc ? 'Discovering area water bodies...' : 'Geocoding location...',
+      detail: overrideLoc
+        ? `Searching OSM around ${overrideLoc.display_name.slice(0, 35)} (${radiusToUse} km radius)`
+        : `Resolving "${query}" via Nominatim`,
+      percent: 25,
+    });
+
+    try {
+      let loc = overrideLoc;
+      if (!loc) {
+        const geocodeRes = await searchLocation(query, 5);
+        if (!geocodeRes.results || geocodeRes.results.length === 0) {
+          throw new Error(`Location "${query}" not found. Please try another city or landmark.`);
+        }
+        setMatchedLocations(geocodeRes.results);
+        loc = geocodeRes.results[0];
+        setSelectedLocation(loc);
+      }
+
+      setOpProgress({
+        active: true,
+        stage: 'Discovering water bodies in area...',
+        detail: `Querying OpenStreetMap (radius ${radiusToUse} km around ${loc.display_name.slice(0, 30)})`,
+        percent: 65,
+      });
+
+      const areaRes = await discoverWaterBodiesByArea(
+        loc.latitude,
+        loc.longitude,
+        radiusToUse,
+        40,
+        query || loc.display_name
+      );
+      setAreaDiscoveryData(areaRes);
+
+      // Fit map to discovery area
+      if (areaRes.bounding_box) {
+        setTargetBounds([
+          [areaRes.bounding_box.min_lat, areaRes.bounding_box.min_lon],
+          [areaRes.bounding_box.max_lat, areaRes.bounding_box.max_lon],
+        ]);
+        setFitTrigger(t => t + 1);
+      } else {
+        const dLat = (radiusToUse / 111.0) * 1.1;
+        const dLon = (radiusToUse / (111.0 * Math.cos((loc.latitude * Math.PI) / 180))) * 1.1;
+        setTargetBounds([
+          [loc.latitude - dLat, loc.longitude - dLon],
+          [loc.latitude + dLat, loc.longitude + dLon],
+        ]);
+        setFitTrigger(t => t + 1);
+      }
+
+      setOpProgress({
+        active: false,
+        stage: 'Area discovery complete ✓',
+        detail: `Found ${areaRes.total_discovered} water bodies in ${radiusToUse} km radius.`,
+        percent: 100,
+      });
+
+      const cityName = loc.display_name.split(',')[0].trim();
+      if (areaRes.total_discovered === 0) {
+        setDiscoverySuccess(`No water bodies found within ${radiusToUse} km of ${cityName}. Try increasing the radius to 5 km or 10 km.`);
+      } else {
+        setDiscoverySuccess(`Discovered ${areaRes.total_discovered} water bodies within ${radiusToUse} km of ${cityName}. Click any water body on the map or list to inspect and add to JalNetra.`);
+      }
+    } catch (err: any) {
+      console.error('Area discovery failed:', err);
+      setDiscoveryError(err.message || 'Area discovery failed');
+      setOpProgress({
+        active: false,
+        stage: 'Discovery failed',
+        detail: err.message,
+        error: err.message,
+      });
+    } finally {
+      setIsSearchingLocation(false);
+      setIsDiscoveringArea(false);
+    }
+  }, [discoveryQuery, discoveryRadiusKm]);
+
+  const handleRegisterWaterBody = useCallback(async (wb: WaterBodyDiscoveryResult) => {
+    setIsRegisteringWb(true);
+    setOpProgress({
+      active: true,
+      stage: 'Registering water body in JalNetra...',
+      detail: `Adding "${wb.name || 'water body'}" to local database`,
+      percent: 40,
+    });
+    setDiscoveryError(null);
+    try {
+      const registered = await importDiscoveredWaterBody(wb);
+      setRegisteredSourceIds(prev => new Set(prev).add(String(wb.source_id)));
+
+      // Refresh water body vectors
+      const freshGeoJson = await getWaterBodiesGeoJson();
+      setGeoJsonData(freshGeoJson);
+
+      // Auto-select this newly registered water body (DOES NOT acquire satellite scenes)
+      handleSelectWaterBody(registered.id, registered, freshGeoJson);
+
+      setOpProgress({
+        active: false,
+        stage: 'Water body registered ✓',
+        detail: `"${registered.name}" is now stored in the database. Satellite scenes can be acquired on-demand in the SCENES tab.`,
+        percent: 100,
+      });
+      setDiscoverySuccess(`✓ "${registered.name}" was added to JalNetra! You can view it in the LAYERS tab or search satellite scenes on-demand.`);
+    } catch (err: any) {
+      console.error('Failed to register water body:', err);
+      setDiscoveryError(err.message || 'Failed to register water body');
+      setOpProgress({
+        active: false,
+        stage: 'Registration failed',
+        detail: err.message,
+        error: err.message,
+      });
+    } finally {
+      setIsRegisteringWb(false);
+    }
+  }, [handleSelectWaterBody]);
 
   const handleSelectScene = useCallback(async (
     sceneItem: MapSceneItem,
@@ -773,8 +961,8 @@ export const MapPage: React.FC = () => {
       {/* ── Full-viewport Leaflet Map ─────────────────────────────────────── */}
       <div style={styles.mapCanvas}>
         <MapContainer
-          center={[19.7, 85.3]}
-          zoom={10}
+          center={[22.0, 79.0]}
+          zoom={5}
           style={styles.mapContainer}
           scrollWheelZoom={true}
         >
@@ -882,6 +1070,140 @@ export const MapPage: React.FC = () => {
               pathOptions={{ color: '#f59e0b', weight: 2, dashArray: '4 4', fillOpacity: 0.08 }}
             />
           )}
+
+          {/* Phase 2: Area Discovery Search Radius Circle */}
+          {areaDiscoveryData && (
+            <Circle
+              center={[areaDiscoveryData.center.latitude, areaDiscoveryData.center.longitude]}
+              radius={areaDiscoveryData.radius_km * 1000}
+              pathOptions={{
+                color: '#0891b2',
+                weight: 2,
+                dashArray: '6 6',
+                fillColor: '#06b6d4',
+                fillOpacity: 0.05,
+              }}
+            />
+          )}
+
+          {/* Phase 2: Area Discovery Center Marker */}
+          {areaDiscoveryData && (
+            <CircleMarker
+              center={[areaDiscoveryData.center.latitude, areaDiscoveryData.center.longitude]}
+              radius={5}
+              pathOptions={{
+                color: '#0891b2',
+                fillColor: '#ffffff',
+                fillOpacity: 1,
+                weight: 2,
+              }}
+            >
+              <Popup>
+                <div style={{ fontSize: '12px', fontFamily: 'sans-serif' }}>
+                  <strong style={{ color: '#0891b2' }}>Search Center</strong><br />
+                  {areaDiscoveryData.query_location || 'Area Search'}<br />
+                  <b>Radius:</b> {areaDiscoveryData.radius_km} km
+                </div>
+              </Popup>
+            </CircleMarker>
+          )}
+
+          {/* Phase 2: Discovered Water Bodies Overlays */}
+          {areaDiscoveryData?.results?.map((wb, idx) => {
+            let parsedGeo = null;
+            if (wb.geometry_geojson) {
+              try {
+                parsedGeo = typeof wb.geometry_geojson === 'string' ? JSON.parse(wb.geometry_geojson) : wb.geometry_geojson;
+              } catch { /* ignore */ }
+            }
+            const isRegistered = isWbRegistered(wb);
+            const isSelected = selectedDiscoveredWb?.source_id === wb.source_id;
+
+            return (
+              <React.Fragment key={`disc-${wb.source_id || idx}`}>
+                {parsedGeo && (
+                  <GeoJSON
+                    key={`disc-poly-${wb.source_id}-${isSelected ? 'sel' : 'unsel'}`}
+                    data={parsedGeo}
+                    style={{
+                      color: isSelected ? '#0284c7' : '#0891b2',
+                      weight: isSelected ? 3 : 2,
+                      dashArray: '4 4',
+                      fillColor: isSelected ? '#38bdf8' : '#22d3ee',
+                      fillOpacity: isSelected ? 0.35 : 0.16,
+                    }}
+                    eventHandlers={{
+                      click: () => setSelectedDiscoveredWb(wb),
+                    }}
+                  />
+                )}
+
+                {wb.centroid_lat != null && wb.centroid_lon != null && (
+                  <CircleMarker
+                    center={[wb.centroid_lat, wb.centroid_lon]}
+                    radius={isSelected ? 8 : 6}
+                    pathOptions={{
+                      color: isRegistered ? '#15803d' : isSelected ? '#0284c7' : '#0891b2',
+                      fillColor: isRegistered ? '#22c55e' : isSelected ? '#38bdf8' : '#06b6d4',
+                      fillOpacity: 0.9,
+                      weight: 2,
+                    }}
+                    eventHandlers={{
+                      click: () => setSelectedDiscoveredWb(wb),
+                    }}
+                  >
+                    <Popup>
+                      <div style={{ fontFamily: 'sans-serif', fontSize: '12px', minWidth: '190px' }}>
+                        <div style={{ fontWeight: 700, fontSize: '13px', color: '#0f172a', marginBottom: '4px' }}>
+                          {wb.name || 'Unnamed Water Body'}
+                        </div>
+                        <div style={{ color: '#475569', fontSize: '11px', marginBottom: '2px' }}>
+                          <b>Type:</b> {wb.water_body_type || 'water'}
+                        </div>
+                        <div style={{ color: '#475569', fontSize: '11px', marginBottom: '2px' }}>
+                          <b>Area:</b> {wb.area_sq_km ? `${wb.area_sq_km.toFixed(2)} km²` : 'N/A'}
+                        </div>
+                        <div style={{ color: '#64748b', fontSize: '10px', marginBottom: '8px' }}>
+                          <b>Source:</b> {wb.provider} ({wb.source_id})
+                        </div>
+                        {isRegistered ? (
+                          <div style={{
+                            padding: '4px 8px',
+                            backgroundColor: '#dcfce7',
+                            color: '#15803d',
+                            borderRadius: '3px',
+                            fontWeight: 700,
+                            fontSize: '11px',
+                            textAlign: 'center',
+                          }}>
+                            ✓ IN JALNETRA
+                          </div>
+                        ) : (
+                          <button
+                            style={{
+                              width: '100%',
+                              padding: '6px 10px',
+                              backgroundColor: '#0284c7',
+                              color: '#ffffff',
+                              border: 'none',
+                              borderRadius: '3px',
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              fontSize: '11px',
+                            }}
+                            disabled={isRegisteringWb}
+                            onClick={() => handleRegisterWaterBody(wb)}
+                          >
+                            {isRegisteringWb && selectedDiscoveredWb?.source_id === wb.source_id ? 'ADDING...' : '+ ADD TO JALNETRA'}
+                          </button>
+                        )}
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                )}
+              </React.Fragment>
+            );
+          })}
         </MapContainer>
       </div>
 
@@ -905,12 +1227,30 @@ export const MapPage: React.FC = () => {
             </span>
           </>
         )}
+        {areaDiscoveryData && (
+          <>
+            <span style={styles.topStatusDivider}>|</span>
+            <span style={styles.badgeDiscoveryActive}>
+              AREA: {areaDiscoveryData.query_location || 'Search'} ({areaDiscoveryData.radius_km}km • {areaDiscoveryData.total_discovered} found)
+            </span>
+          </>
+        )}
         {isDrawingAoi && (
           <>
             <span style={styles.topStatusDivider}>|</span>
             <span style={styles.badgeDrawing}>DRAWING AOI — click &amp; drag on map</span>
           </>
         )}
+        <span style={styles.topStatusDivider}>|</span>
+        <button
+          style={activeSidebarTab === 'discovery' ? styles.topDiscoveryBtnActive : styles.topDiscoveryBtn}
+          onClick={() => {
+            setActiveSidebarTab('discovery');
+            setSidebarCollapsed(false);
+          }}
+        >
+          🔍 AREA DISCOVERY
+        </button>
       </div>
 
       {/* ── Prominent Operation Progress Panel ───────────────────────────── */}
@@ -979,7 +1319,7 @@ export const MapPage: React.FC = () => {
           <>
             {/* Tab bar */}
             <div style={styles.tabBar}>
-              {(['layers', 'scenes', 'aoi'] as const).map(tab => (
+              {(['discovery', 'layers', 'scenes', 'aoi'] as const).map(tab => (
                 <button
                   key={tab}
                   data-tab={tab}
@@ -989,10 +1329,209 @@ export const MapPage: React.FC = () => {
                   }}
                   onClick={() => setActiveSidebarTab(tab)}
                 >
-                  {tab === 'layers' ? 'LAYERS' : tab === 'scenes' ? 'SCENES' : 'AOI'}
+                  {tab === 'discovery' ? 'DISCOVERY' : tab === 'layers' ? 'LAYERS' : tab === 'scenes' ? 'SCENES' : 'AOI'}
                 </button>
               ))}
             </div>
+
+            {/* ── Tab: DISCOVERY ─────────────────────────────────────────── */}
+            {activeSidebarTab === 'discovery' && (
+              <div style={styles.tabContent}>
+                <div style={styles.sectionBlock}>
+                  <label style={styles.sectionLabel}>AREA-BASED WATER BODY DISCOVERY</label>
+                  <div style={styles.helpTextSmall}>
+                    Search any city or region to discover water bodies via OpenStreetMap, visualize the area, and register water bodies without downloading satellite imagery.
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.3rem' }}>
+                    <label style={styles.subLabel}>TARGET LOCATION</label>
+                    <div style={{ display: 'flex', gap: '0.3rem' }}>
+                      <input
+                        type="text"
+                        placeholder="e.g. Delhi, Pune, Nagpur, Ooty..."
+                        value={discoveryQuery}
+                        onChange={(e) => setDiscoveryQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleExecuteAreaSearch();
+                        }}
+                        style={styles.textInput}
+                      />
+                      <button
+                        style={styles.actionBtnSmall}
+                        onClick={() => handleExecuteAreaSearch()}
+                        disabled={isSearchingLocation || isDiscoveringArea || !discoveryQuery.trim()}
+                      >
+                        {isSearchingLocation || isDiscoveringArea ? '...' : 'SEARCH'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Matched geocoded locations selector if multiple found */}
+                  {matchedLocations.length > 1 && (
+                    <div style={{ marginTop: '0.35rem' }}>
+                      <label style={styles.subLabel}>RESOLVED LOCATION</label>
+                      <select
+                        style={styles.selectInput}
+                        value={selectedLocation?.display_name || ''}
+                        onChange={(e) => {
+                          const loc = matchedLocations.find(l => l.display_name === e.target.value);
+                          if (loc) {
+                            setSelectedLocation(loc);
+                            handleExecuteAreaSearch(loc);
+                          }
+                        }}
+                      >
+                        {matchedLocations.map((loc, idx) => (
+                          <option key={idx} value={loc.display_name}>
+                            {loc.display_name.slice(0, 48)}…
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Search Radius */}
+                  <div style={{ marginTop: '0.4rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label style={styles.subLabel}>SEARCH RADIUS</label>
+                      <span style={styles.radiusPill}>{discoveryRadiusKm < 1 ? `${discoveryRadiusKm * 1000} m` : `${discoveryRadiusKm} km`}</span>
+                    </div>
+                    <div style={styles.radiusButtonGrid}>
+                      {[0.5, 1.0, 2.0, 5.0, 10.0, 25.0].map(r => (
+                        <button
+                          key={r}
+                          style={{
+                            ...styles.radiusChoiceBtn,
+                            ...(discoveryRadiusKm === r ? styles.radiusChoiceBtnActive : {}),
+                          }}
+                          onClick={() => {
+                            setDiscoveryRadiusKm(r);
+                            if (selectedLocation) {
+                              handleExecuteAreaSearch(selectedLocation, r);
+                            }
+                          }}
+                        >
+                          {r < 1 ? `${r * 1000}m` : `${r}km`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    style={{
+                      ...styles.searchAreaMainBtn,
+                      opacity: isSearchingLocation || isDiscoveringArea ? 0.7 : 1,
+                    }}
+                    onClick={() => handleExecuteAreaSearch(selectedLocation || undefined)}
+                    disabled={isSearchingLocation || isDiscoveringArea || !discoveryQuery.trim()}
+                  >
+                    {isSearchingLocation || isDiscoveringArea ? 'DISCOVERING AREA WATER BODIES...' : '🔍 DISCOVER WATER BODIES IN AREA'}
+                  </button>
+
+                  {/* Success / Info note */}
+                  {discoverySuccess && (
+                    <div style={styles.discoverySuccessNote}>
+                      {discoverySuccess}
+                    </div>
+                  )}
+
+                  {/* Discovery Error */}
+                  {discoveryError && (
+                    <div style={styles.errorTextSmall}>
+                      {discoveryError}
+                    </div>
+                  )}
+                </div>
+
+                {/* Discovered Water Bodies Results */}
+                {areaDiscoveryData && (
+                  <div style={styles.sectionBlock}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label style={styles.sectionLabel}>
+                        DISCOVERED WATER BODIES ({areaDiscoveryData.total_discovered})
+                      </label>
+                      <button
+                        style={styles.clearBtn}
+                        onClick={() => {
+                          setAreaDiscoveryData(null);
+                          setSelectedDiscoveredWb(null);
+                          setMatchedLocations([]);
+                          setSelectedLocation(null);
+                          setDiscoverySuccess(null);
+                          setDiscoveryError(null);
+                        }}
+                      >
+                        Clear
+                      </button>
+                    </div>
+
+                    <div style={styles.areaInfoBox}>
+                      <div><strong>Center:</strong> {areaDiscoveryData.center.latitude.toFixed(4)}, {areaDiscoveryData.center.longitude.toFixed(4)}</div>
+                      <div><strong>Radius:</strong> {areaDiscoveryData.radius_km} km</div>
+                    </div>
+
+                    <div style={styles.discoveredScrollList}>
+                      {areaDiscoveryData.results.length === 0 ? (
+                        <div style={styles.emptyResultsText}>
+                          No water bodies found in this {areaDiscoveryData.radius_km} km zone. Try increasing radius to 5 km or 10 km.
+                        </div>
+                      ) : (
+                        areaDiscoveryData.results.map((wb, idx) => {
+                          const registered = isWbRegistered(wb);
+                          const isSelected = selectedDiscoveredWb?.source_id === wb.source_id;
+                          return (
+                            <div
+                              key={wb.source_id || idx}
+                              style={{
+                                ...styles.discoveredCard,
+                                ...(isSelected ? styles.discoveredCardSelected : {}),
+                              }}
+                              onClick={() => {
+                                setSelectedDiscoveredWb(wb);
+                                if (wb.centroid_lat != null && wb.centroid_lon != null) {
+                                  setTargetBounds([
+                                    [wb.centroid_lat - 0.008, wb.centroid_lon - 0.008],
+                                    [wb.centroid_lat + 0.008, wb.centroid_lon + 0.008],
+                                  ]);
+                                  setFitTrigger(t => t + 1);
+                                }
+                              }}
+                            >
+                              <div style={styles.wbCardTitleRow}>
+                                <span style={styles.wbCardTitle}>{wb.name || 'Unnamed Water Body'}</span>
+                                <span style={styles.wbCardTypeBadge}>{wb.water_body_type || 'water'}</span>
+                              </div>
+
+                              <div style={styles.wbCardMetaRow}>
+                                <span>Area: {wb.area_sq_km ? `${wb.area_sq_km.toFixed(2)} km²` : 'N/A'}</span>
+                                <span>Provider: {wb.provider}</span>
+                              </div>
+
+                              <div style={styles.wbCardActionRow}>
+                                {registered ? (
+                                  <span style={styles.badgeAlreadyAdded}>✓ IN JALNETRA</span>
+                                ) : (
+                                  <button
+                                    style={styles.addWbBtn}
+                                    disabled={isRegisteringWb}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleRegisterWaterBody(wb);
+                                    }}
+                                  >
+                                    {isRegisteringWb && selectedDiscoveredWb?.source_id === wb.source_id ? 'ADDING...' : '+ ADD TO JALNETRA'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* ── Tab: LAYERS ─────────────────────────────────────────────── */}
             {activeSidebarTab === 'layers' && (
@@ -1000,17 +1539,36 @@ export const MapPage: React.FC = () => {
                 {/* Water Body selector */}
                 <div style={styles.sectionBlock}>
                   <label style={styles.sectionLabel}>SELECTED WATER BODY</label>
-                  <select
-                    style={styles.selectInput}
-                    value={selectedWaterBodyId}
-                    onChange={(e) => handleSelectWaterBody(e.target.value)}
-                  >
-                    {geoJsonData?.features?.map((f: any) => (
-                      <option key={f.properties.id} value={f.properties.id}>
-                        {f.properties.name} {f.properties.country ? `(${f.properties.country})` : ''}
-                      </option>
-                    ))}
-                  </select>
+                  {(!geoJsonData?.features || geoJsonData.features.length === 0) ? (
+                    <div style={{
+                      padding: '0.75rem',
+                      backgroundColor: 'var(--color-surface-subtle)',
+                      border: '1px dashed var(--border-color)',
+                      fontSize: '0.75rem',
+                      color: 'var(--color-text-secondary)',
+                      lineHeight: 1.4,
+                    }}>
+                      <div>No water bodies registered yet. Search and discover any area using the <b>DISCOVERY</b> tab.</div>
+                      <button
+                        style={styles.openDiscoveryBtn}
+                        onClick={() => setActiveSidebarTab('discovery')}
+                      >
+                        🔍 OPEN AREA DISCOVERY
+                      </button>
+                    </div>
+                  ) : (
+                    <select
+                      style={styles.selectInput}
+                      value={selectedWaterBodyId}
+                      onChange={(e) => handleSelectWaterBody(e.target.value)}
+                    >
+                      {geoJsonData.features.map((f: any) => (
+                        <option key={f.properties.id} value={f.properties.id}>
+                          {f.properties.name} {f.properties.country ? `(${f.properties.country})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
 
                   {selectedWaterBodyProps && (
                     <div style={styles.wbInfoCard}>
@@ -1098,6 +1656,12 @@ export const MapPage: React.FC = () => {
                     )}
                     {aoiMode === 'manual' && manualAoi && (
                       <LegendRow color="rgba(245,158,11,0.1)" borderColor="#f59e0b" label="Manual AOI" dashed />
+                    )}
+                    {areaDiscoveryData && (
+                      <>
+                        <LegendRow color="rgba(6,182,212,0.06)" borderColor="#0891b2" label={`Search Radius Area (${areaDiscoveryData.radius_km}km)`} dashed />
+                        <LegendRow color="#22d3ee" borderColor="#0891b2" label="Discovered Water Body" />
+                      </>
                     )}
                   </div>
                 </div>
@@ -2148,5 +2712,224 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#1d4ed8',
     backgroundColor: '#dbeafe',
     padding: '0.04rem 0.22rem',
+  },
+  subLabel: {
+    fontSize: '0.62rem',
+    fontWeight: 700,
+    letterSpacing: '0.04em',
+    color: 'var(--color-text-secondary)',
+    textTransform: 'uppercase' as const,
+  },
+  helpTextSmall: {
+    fontSize: '0.68rem',
+    color: 'var(--color-text-secondary)',
+    lineHeight: 1.35,
+  },
+  textInput: {
+    flex: 1,
+    padding: '0.38rem 0.5rem',
+    border: '1px solid var(--border-color)',
+    backgroundColor: '#fff',
+    fontSize: '0.74rem',
+    borderRadius: '2px',
+  },
+  actionBtnSmall: {
+    padding: '0.38rem 0.65rem',
+    backgroundColor: 'var(--color-primary)',
+    color: '#fff',
+    border: 'none',
+    fontWeight: 700,
+    fontSize: '0.66rem',
+    cursor: 'pointer',
+    letterSpacing: '0.03em',
+  },
+  radiusPill: {
+    fontFamily: 'var(--font-mono)',
+    fontWeight: 700,
+    fontSize: '0.66rem',
+    color: '#0284c7',
+  },
+  radiusButtonGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(6, 1fr)',
+    gap: '0.25rem',
+    marginTop: '0.25rem',
+  },
+  radiusChoiceBtn: {
+    padding: '0.3rem 0',
+    backgroundColor: 'var(--color-surface-subtle)',
+    border: '1px solid var(--border-color)',
+    color: 'var(--color-text-secondary)',
+    fontSize: '0.64rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+    textAlign: 'center' as const,
+  },
+  radiusChoiceBtnActive: {
+    backgroundColor: '#0284c7',
+    borderColor: '#0284c7',
+    color: '#ffffff',
+    fontWeight: 700,
+  },
+  searchAreaMainBtn: {
+    marginTop: '0.45rem',
+    width: '100%',
+    padding: '0.52rem',
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    fontWeight: 700,
+    fontSize: '0.7rem',
+    letterSpacing: '0.04em',
+    cursor: 'pointer',
+    textAlign: 'center' as const,
+  },
+  discoverySuccessNote: {
+    marginTop: '0.35rem',
+    padding: '0.4rem 0.5rem',
+    backgroundColor: '#ecfdf5',
+    border: '1px solid #6ee7b7',
+    color: '#065f46',
+    fontSize: '0.68rem',
+    lineHeight: 1.35,
+  },
+  areaInfoBox: {
+    padding: '0.35rem 0.5rem',
+    backgroundColor: 'var(--color-surface-subtle)',
+    border: '1px solid var(--border-color)',
+    fontSize: '0.66rem',
+    color: 'var(--color-text-secondary)',
+    display: 'flex',
+    justifyContent: 'space-between',
+  },
+  discoveredScrollList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.4rem',
+    maxHeight: '340px',
+    overflowY: 'auto' as const,
+    marginTop: '0.2rem',
+  },
+  emptyResultsText: {
+    padding: '0.75rem',
+    fontSize: '0.72rem',
+    color: 'var(--color-text-muted)',
+    textAlign: 'center' as const,
+    fontStyle: 'italic',
+  },
+  discoveredCard: {
+    padding: '0.45rem',
+    backgroundColor: '#ffffff',
+    border: '1px solid var(--border-color)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem',
+    cursor: 'pointer',
+    transition: 'border-color 0.15s',
+  },
+  discoveredCardSelected: {
+    borderColor: '#0284c7',
+    backgroundColor: '#f0f9ff',
+  },
+  wbCardTitleRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '0.4rem',
+  },
+  wbCardTitle: {
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    color: '#0f172a',
+    lineHeight: 1.25,
+  },
+  wbCardTypeBadge: {
+    fontSize: '0.58rem',
+    fontWeight: 600,
+    backgroundColor: '#e0f2fe',
+    color: '#0369a1',
+    padding: '0.08rem 0.3rem',
+    textTransform: 'uppercase' as const,
+    whiteSpace: 'nowrap' as const,
+    flexShrink: 0,
+  },
+  wbCardMetaRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: '0.64rem',
+    color: 'var(--color-text-secondary)',
+  },
+  wbCardActionRow: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    marginTop: '0.15rem',
+  },
+  addWbBtn: {
+    padding: '0.28rem 0.55rem',
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    fontWeight: 700,
+    fontSize: '0.64rem',
+    cursor: 'pointer',
+    letterSpacing: '0.02em',
+  },
+  badgeAlreadyAdded: {
+    fontSize: '0.62rem',
+    fontWeight: 700,
+    color: '#15803d',
+    backgroundColor: '#dcfce7',
+    padding: '0.12rem 0.4rem',
+  },
+  clearBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#94a3b8',
+    cursor: 'pointer',
+    fontSize: '0.64rem',
+    textDecoration: 'underline',
+  },
+  openDiscoveryBtn: {
+    marginTop: '0.5rem',
+    width: '100%',
+    padding: '0.45rem',
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    fontWeight: 700,
+    fontSize: '0.68rem',
+    cursor: 'pointer',
+    letterSpacing: '0.03em',
+  },
+  topDiscoveryBtn: {
+    background: 'none',
+    border: '1px solid #0284c7',
+    color: '#0284c7',
+    borderRadius: '3px',
+    padding: '0.15rem 0.5rem',
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+    letterSpacing: '0.03em',
+  },
+  topDiscoveryBtnActive: {
+    backgroundColor: '#0284c7',
+    border: '1px solid #0284c7',
+    color: '#ffffff',
+    borderRadius: '3px',
+    padding: '0.15rem 0.5rem',
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+    letterSpacing: '0.03em',
+  },
+  badgeDiscoveryActive: {
+    fontFamily: 'var(--font-mono)',
+    fontWeight: 700,
+    fontSize: '0.65rem',
+    color: '#0891b2',
+    backgroundColor: '#cffafe',
+    padding: '0.1rem 0.35rem',
+    border: '1px solid #a5f3fc',
   },
 };

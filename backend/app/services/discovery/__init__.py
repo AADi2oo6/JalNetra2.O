@@ -5,6 +5,11 @@ from app.services.discovery.models import (
     DiscoverySearchResponse,
     ProviderStatus,
     ProviderListResponse,
+    GeocodedLocation,
+    LocationSearchResponse,
+    SearchCenter,
+    SearchBoundingBox,
+    AreaDiscoveryResponse,
 )
 from app.services.discovery.service import (
     WaterBodyDiscoveryService,
@@ -17,6 +22,11 @@ __all__ = [
     "DiscoverySearchResponse",
     "ProviderStatus",
     "ProviderListResponse",
+    "GeocodedLocation",
+    "LocationSearchResponse",
+    "SearchCenter",
+    "SearchBoundingBox",
+    "AreaDiscoveryResponse",
     "WaterBodyDiscoveryService",
     "DiscoveryProviderError",
 ]

@@ -6,7 +6,11 @@ import httpx
 
 from app.core.config import settings
 from app.services.discovery.base import WaterBodyProvider
-from app.services.discovery.models import WaterBodyDiscoveryResult, compute_geometry_hash_from_dict
+from app.services.discovery.models import (
+    WaterBodyDiscoveryResult,
+    GeocodedLocation,
+    compute_geometry_hash_from_dict,
+)
 
 logger = logging.getLogger("jalnetra.discovery.osm")
 
@@ -270,3 +274,297 @@ class OpenStreetMapProvider(WaterBodyProvider):
         except Exception as exc:
             logger.warning("Failed to normalize OSM item %s: %s", item.get("place_id"), exc)
             return None
+
+    async def geocode_location(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> List[GeocodedLocation]:
+        query = query.strip()
+        if not query:
+            return []
+
+        limit = min(max(1, limit), 10)
+        params: Dict[str, Any] = {
+            "q": query,
+            "format": "jsonv2",
+            "addressdetails": 1,
+            "limit": limit,
+        }
+        headers = {
+            "User-Agent": self._user_agent,
+            "Accept": "application/json",
+        }
+
+        try:
+            if self._client:
+                response = await self._client.get(
+                    self._base_url,
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout,
+                )
+            else:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    response = await client.get(
+                        self._base_url,
+                        params=params,
+                        headers=headers,
+                    )
+
+            if response.status_code >= 400:
+                logger.warning("Geocoding returned HTTP %s for '%s'", response.status_code, query)
+                return []
+
+            data = response.json()
+            if not isinstance(data, list):
+                return []
+
+            results: List[GeocodedLocation] = []
+            for item in data:
+                try:
+                    lat = float(item["lat"])
+                    lon = float(item["lon"])
+                    display_name = item.get("display_name", query)
+                    item_type = item.get("type") or item.get("category")
+                    bbox_raw = item.get("boundingbox")
+                    bbox = None
+                    if bbox_raw and len(bbox_raw) == 4:
+                        bbox = [float(b) for b in bbox_raw]
+
+                    results.append(
+                        GeocodedLocation(
+                            display_name=display_name,
+                            latitude=lat,
+                            longitude=lon,
+                            type=item_type,
+                            boundingbox=bbox,
+                        )
+                    )
+                except (ValueError, KeyError, TypeError):
+                    continue
+
+            return results
+        except httpx.TimeoutException:
+            logger.warning("Geocoding timeout after %ss for query '%s'", self._timeout, query)
+            raise
+        except httpx.RequestError as exc:
+            logger.warning("Geocoding network error for '%s': %s", query, exc)
+            raise
+
+    async def search_area(
+        self,
+        latitude: float,
+        longitude: float,
+        radius_km: float,
+        limit: int = 30,
+    ) -> List[WaterBodyDiscoveryResult]:
+        radius_meters = int(max(100, radius_km * 1000))
+        limit = min(max(1, limit), 60)
+
+        ql = f"""[out:json][timeout:25];
+(
+  nwr["natural"="water"](around:{radius_meters},{latitude},{longitude});
+  nwr["water"](around:{radius_meters},{latitude},{longitude});
+  nwr["waterway"~"^(riverbank|dock)$"](around:{radius_meters},{latitude},{longitude});
+  nwr["landuse"~"^(reservoir|basin)$"](around:{radius_meters},{latitude},{longitude});
+);
+out geom {limit};"""
+
+        headers = {
+            "User-Agent": self._user_agent,
+            "Accept": "application/json",
+        }
+
+        overpass_endpoints = [
+            "https://overpass-api.de/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+        ]
+
+        for ep in overpass_endpoints:
+            try:
+                if self._client:
+                    resp = await self._client.post(
+                        ep,
+                        data={"data": ql},
+                        headers=headers,
+                        timeout=self._timeout,
+                    )
+                else:
+                    async with httpx.AsyncClient(timeout=self._timeout) as client:
+                        resp = await client.post(
+                            ep,
+                            data={"data": ql},
+                            headers=headers,
+                        )
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    elements = data.get("elements", [])
+                    results: List[WaterBodyDiscoveryResult] = []
+                    for el in elements:
+                        normalized = self._normalize_overpass_element(el)
+                        if normalized:
+                            results.append(normalized)
+
+                    # Prioritize named water bodies over unnamed
+                    results.sort(key=lambda r: (1 if r.name.startswith("Unnamed") else 0))
+                    return results[:limit]
+            except Exception as err:
+                logger.warning("Overpass endpoint %s failed for area query: %s", ep, err)
+                continue
+
+        # Fallback to bounded Nominatim search if Overpass instances fail
+        logger.info("Falling back to Nominatim bounded search for (%s, %s, %s km)", latitude, longitude, radius_km)
+        return await self._search_area_nominatim_fallback(latitude, longitude, radius_km, limit)
+
+    def _normalize_overpass_element(self, el: Dict[str, Any]) -> Optional[WaterBodyDiscoveryResult]:
+        try:
+            osm_type = el.get("type", "way")
+            osm_id = el.get("id", "")
+            source_id = f"{osm_type}/{osm_id}"
+            tags = el.get("tags", {}) or {}
+
+            # Name extraction
+            name = tags.get("name") or tags.get("name:en") or tags.get("alt_name")
+            water_body_type = (
+                tags.get("water")
+                or tags.get("natural")
+                or tags.get("waterway")
+                or tags.get("landuse")
+                or "water"
+            )
+
+            if not name:
+                name = f"Unnamed {water_body_type.capitalize()} ({source_id})"
+
+            geom_dict = None
+            points = el.get("geometry", [])
+            min_lat, max_lat, min_lon, max_lon = None, None, None, None
+            centroid_lat, centroid_lon = None, None
+
+            if points:
+                lats = [pt["lat"] for pt in points if "lat" in pt]
+                lons = [pt["lon"] for pt in points if "lon" in pt]
+                if lats and lons:
+                    min_lat, max_lat = min(lats), max(lats)
+                    min_lon, max_lon = min(lons), max(lons)
+                    centroid_lat = sum(lats) / len(lats)
+                    centroid_lon = sum(lons) / len(lons)
+
+                coords = [[pt["lon"], pt["lat"]] for pt in points if "lat" in pt and "lon" in pt]
+                if len(coords) >= 3:
+                    if coords[0] == coords[-1]:
+                        geom_dict = {"type": "Polygon", "coordinates": [coords]}
+                    elif len(coords) >= 4:
+                        geom_dict = {"type": "Polygon", "coordinates": [coords + [coords[0]]]}
+                    else:
+                        geom_dict = {"type": "LineString", "coordinates": coords}
+                elif coords:
+                    geom_dict = {"type": "LineString", "coordinates": coords}
+            elif "lat" in el and "lon" in el:
+                centroid_lat = float(el["lat"])
+                centroid_lon = float(el["lon"])
+                min_lat = max_lat = centroid_lat
+                min_lon = max_lon = centroid_lon
+                geom_dict = {"type": "Point", "coordinates": [centroid_lon, centroid_lat]}
+
+            geom_str = json.dumps(geom_dict) if geom_dict else None
+            geom_hash = compute_geometry_hash_from_dict(geom_dict) if geom_dict else None
+
+            # Calculate area estimation
+            area_sq_km = None
+            if min_lat is not None and max_lat is not None and min_lon is not None and max_lon is not None:
+                d_lat = abs(max_lat - min_lat)
+                d_lon = abs(max_lon - min_lon)
+                if d_lat > 0 or d_lon > 0:
+                    avg_lat_rad = math.radians(centroid_lat if centroid_lat is not None else min_lat)
+                    km_lat = d_lat * 111.0
+                    km_lon = d_lon * 111.0 * math.cos(avg_lat_rad)
+                    area_sq_km = round(km_lat * km_lon, 3)
+
+            return WaterBodyDiscoveryResult(
+                provider="osm",
+                source_id=source_id,
+                name=name,
+                water_body_type=water_body_type,
+                country=None,
+                state_province=None,
+                district=None,
+                city=None,
+                description=tags.get("description"),
+                geometry_geojson=geom_str,
+                geometry_hash=geom_hash,
+                min_lat=min_lat,
+                min_lon=min_lon,
+                max_lat=max_lat,
+                max_lon=max_lon,
+                centroid_lat=centroid_lat,
+                centroid_lon=centroid_lon,
+                area_sq_km=area_sq_km,
+                source_metadata={
+                    "osm_type": osm_type,
+                    "osm_id": osm_id,
+                    "tags": tags,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to normalize Overpass element: %s", exc)
+            return None
+
+    async def _search_area_nominatim_fallback(
+        self,
+        latitude: float,
+        longitude: float,
+        radius_km: float,
+        limit: int,
+    ) -> List[WaterBodyDiscoveryResult]:
+        d_lat = radius_km / 111.0
+        d_lon = radius_km / (111.0 * max(0.01, math.cos(math.radians(latitude))))
+        min_lat = latitude - d_lat
+        max_lat = latitude + d_lat
+        min_lon = longitude - d_lon
+        max_lon = longitude + d_lon
+
+        params: Dict[str, Any] = {
+            "q": "water",
+            "viewbox": f"{min_lon},{max_lat},{max_lon},{min_lat}",
+            "bounded": 1,
+            "format": "jsonv2",
+            "polygon_geojson": 1,
+            "addressdetails": 1,
+            "limit": limit,
+        }
+        headers = {
+            "User-Agent": self._user_agent,
+            "Accept": "application/json",
+        }
+
+        try:
+            if self._client:
+                resp = await self._client.get(
+                    self._base_url,
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout,
+                )
+            else:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.get(
+                        self._base_url,
+                        params=params,
+                        headers=headers,
+                    )
+            if resp.status_code == 200:
+                data = resp.json()
+                results: List[WaterBodyDiscoveryResult] = []
+                if isinstance(data, list):
+                    for item in data:
+                        normalized = self._normalize_item(item)
+                        if normalized:
+                            results.append(normalized)
+                return results[:limit]
+        except Exception as exc:
+            logger.warning("Nominatim area fallback failed: %s", exc)
+        return []
+

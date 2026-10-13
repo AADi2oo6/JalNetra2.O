@@ -1,69 +1,61 @@
-from pathlib import Path
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 
-from app.core.config import settings
 from app.db.database import get_db
-from app.services.storage_service import storage_service
-from app.schemas import StorageStatusResponse, StorageDirectoryStatus
+from app.services.storage.reset_service import reset_service
+from app.schemas.storage import (
+    StorageStatusResponse,
+    StorageResetResponse,
+)
 
-router = APIRouter(prefix="/storage", tags=["Storage"])
+router = APIRouter(prefix="/storage", tags=["Storage & Maintenance"])
 
 
-@router.get("/status", response_model=StorageStatusResponse, summary="Storage and database status")
+@router.get(
+    "/status",
+    response_model=StorageStatusResponse,
+    summary="Storage and database status",
+    description="Returns full audit of database records, local storage sizes, directory status, and orphan detections.",
+)
 def get_storage_status(db: Session = Depends(get_db)) -> StorageStatusResponse:
-    # Check database status
-    db_status = "ok"
-    try:
-        db.execute(text("SELECT 1"))
-    except Exception as e:
-        db_status = f"error: {str(e)}"
+    return reset_service.collect_storage_status(db)
 
-    # Check key directories
-    subdirs = [
-        "data",
-        "database",
-        "water_bodies",
-        "scenes",
-        "processed",
-        "tiles",
-        "cache",
-        "exports",
-        "manifests",
-    ]
 
-    directories_summary = {}
-    details = {}
+@router.post(
+    "/clear/cache",
+    response_model=StorageResetResponse,
+    summary="Clear cache entries",
+    description="Deletes all database cache records and removes temporary cache files from disk.",
+)
+def clear_cache(db: Session = Depends(get_db)) -> StorageResetResponse:
+    return reset_service.clear_cache(db)
 
-    for sub in subdirs:
-        dir_path = (
-            storage_service.base_dir
-            if sub == "data"
-            else storage_service.base_dir / sub
-        )
-        exists = dir_path.exists()
-        is_dir = dir_path.is_dir() if exists else False
-        file_count = len(list(dir_path.iterdir())) if is_dir else 0
 
-        status_str = "ok" if (exists and is_dir) else "missing"
-        directories_summary[sub] = status_str
+@router.post(
+    "/clear/processed",
+    response_model=StorageResetResponse,
+    summary="Clear processed imagery data",
+    description="Deletes all analysis run records and generated mask/image outputs from disk.",
+)
+def clear_processed_data(db: Session = Depends(get_db)) -> StorageResetResponse:
+    return reset_service.clear_processed_data(db)
 
-        # Only present relative path to avoid leaking sensitive host filesystem details
-        rel_str = f"./data/{sub}" if sub != "data" else "./data"
-        details[sub] = StorageDirectoryStatus(
-            path=rel_str,
-            exists=exists,
-            is_directory=is_dir,
-            file_count=file_count,
-        )
 
-    return StorageStatusResponse(
-        database={
-            "status": db_status,
-            "engine": "sqlite",
-            "url_type": "sqlite_local",
-        },
-        directories=directories_summary,
-        details=details,
-    )
+@router.post(
+    "/clear/satellite",
+    response_model=StorageResetResponse,
+    summary="Clear satellite scenes and imagery",
+    description="Deletes all satellite scene and asset records, and deletes raw GeoTIFF files from disk.",
+)
+def clear_satellite_data(db: Session = Depends(get_db)) -> StorageResetResponse:
+    return reset_service.clear_satellite_data(db)
+
+
+@router.post(
+    "/reset",
+    response_model=StorageResetResponse,
+    summary="Reset all project data",
+    description="Completely purges all application database records and all local storage files (scenes, processed, cache, exports). Schema and alembic versions remain intact.",
+)
+def reset_project_data(db: Session = Depends(get_db)) -> StorageResetResponse:
+    return reset_service.reset_all_data(db)

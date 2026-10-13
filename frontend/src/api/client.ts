@@ -44,11 +44,46 @@ export interface WaterBodyListResponse {
   offset: number;
 }
 
+export interface StorageDatabaseCounts {
+  water_bodies: number;
+  satellite_scenes: number;
+  satellite_assets: number;
+  analysis_runs: number;
+  cache_entries: number;
+  size_bytes: number;
+  size_formatted: string;
+}
+
+export interface StorageFilesystemSizes {
+  satellite_data_bytes: number;
+  satellite_data_formatted: string;
+  processed_data_bytes: number;
+  processed_data_formatted: string;
+  cache_bytes: number;
+  cache_formatted: string;
+  total_bytes: number;
+  total_formatted: string;
+}
+
+export interface StorageOrphansSummary {
+  orphan_scene_directories_count: number;
+  orphan_scene_directories: string[];
+  missing_scene_directories_count: number;
+  missing_scene_directories: string[];
+}
+
 export interface StorageStatus {
   database: {
     status: string;
     engine: string;
     url_type: string;
+    size_bytes?: number;
+    size_formatted?: string;
+    water_bodies?: number;
+    scenes?: number;
+    assets?: number;
+    analysis_runs?: number;
+    cache_entries?: number;
   };
   directories: Record<string, string>;
   details: Record<
@@ -60,6 +95,27 @@ export interface StorageStatus {
       file_count: number;
     }
   >;
+  database_counts?: StorageDatabaseCounts;
+  local_storage?: StorageFilesystemSizes;
+  orphans?: StorageOrphansSummary;
+}
+
+export interface StorageResetResponse {
+  success: boolean;
+  operation: string;
+  message: string;
+  database: {
+    water_bodies_deleted: number;
+    scenes_deleted: number;
+    assets_deleted: number;
+    analysis_runs_deleted: number;
+    cache_entries_deleted: number;
+  };
+  filesystem: {
+    files_deleted: number;
+    bytes_freed: number;
+    bytes_freed_formatted: string;
+  };
 }
 
 export interface WaterBodyDiscoveryResult {
@@ -99,6 +155,40 @@ export interface ProviderStatus {
 
 export interface ProviderListResponse {
   providers: ProviderStatus[];
+}
+
+export interface GeocodedLocation {
+  display_name: string;
+  latitude: number;
+  longitude: number;
+  type?: string | null;
+  boundingbox?: number[] | null;
+}
+
+export interface LocationSearchResponse {
+  query: string;
+  results: GeocodedLocation[];
+}
+
+export interface SearchCenter {
+  latitude: number;
+  longitude: number;
+}
+
+export interface SearchBoundingBox {
+  min_lat: number;
+  min_lon: number;
+  max_lat: number;
+  max_lon: number;
+}
+
+export interface AreaDiscoveryResponse {
+  query_location?: string | null;
+  center: SearchCenter;
+  radius_km: number;
+  bounding_box: SearchBoundingBox;
+  total_discovered: number;
+  results: WaterBodyDiscoveryResult[];
 }
 
 // Phase 3: Satellite STAC Models
@@ -190,6 +280,38 @@ export async function getStorageStatus(): Promise<StorageStatus> {
   return handleResponse<StorageStatus>(response);
 }
 
+export async function clearCache(): Promise<StorageResetResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/storage/clear/cache`, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<StorageResetResponse>(response);
+}
+
+export async function clearProcessedData(): Promise<StorageResetResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/storage/clear/processed`, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<StorageResetResponse>(response);
+}
+
+export async function clearSatelliteData(): Promise<StorageResetResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/storage/clear/satellite`, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<StorageResetResponse>(response);
+}
+
+export async function resetProjectData(): Promise<StorageResetResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/storage/reset`, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<StorageResetResponse>(response);
+}
+
 export async function listWaterBodies(limit = 50, offset = 0): Promise<WaterBodyListResponse> {
   const response = await fetch(`${BASE_URL}/api/v1/water-bodies?limit=${limit}&offset=${offset}`, {
     headers: { 'Accept': 'application/json' },
@@ -229,6 +351,36 @@ export async function searchDiscoveredWaterBodies(
     headers: { 'Accept': 'application/json' },
   });
   return handleResponse<DiscoverySearchResponse>(response);
+}
+
+export async function searchLocation(query: string, limit = 5): Promise<LocationSearchResponse> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  const response = await fetch(`${BASE_URL}/api/v1/discovery/location/search?${params.toString()}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<LocationSearchResponse>(response);
+}
+
+export async function discoverWaterBodiesByArea(
+  latitude: number,
+  longitude: number,
+  radiusKm = 1.0,
+  limit = 30,
+  queryLocation?: string
+): Promise<AreaDiscoveryResponse> {
+  const params = new URLSearchParams({
+    latitude: String(latitude),
+    longitude: String(longitude),
+    radius_km: String(radiusKm),
+    limit: String(limit),
+  });
+  if (queryLocation) {
+    params.set('query_location', queryLocation);
+  }
+  const response = await fetch(`${BASE_URL}/api/v1/discovery/water-bodies/area?${params.toString()}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<AreaDiscoveryResponse>(response);
 }
 
 export async function importDiscoveredWaterBody(

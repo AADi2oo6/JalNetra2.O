@@ -10,6 +10,8 @@ from app.services.discovery import (
     DiscoverySearchResponse,
     ProviderListResponse,
     ProviderStatus,
+    LocationSearchResponse,
+    AreaDiscoveryResponse,
 )
 
 router = APIRouter(prefix="/discovery", tags=["Discovery"])
@@ -17,6 +19,46 @@ router = APIRouter(prefix="/discovery", tags=["Discovery"])
 
 def get_discovery_service(db: Session = Depends(get_db)) -> WaterBodyDiscoveryService:
     return WaterBodyDiscoveryService(db)
+
+
+@router.get(
+    "/location/search",
+    response_model=LocationSearchResponse,
+    summary="Geocode user-entered location (city, town, place)",
+    description="Resolves location query into coordinates using OpenStreetMap Nominatim with local caching.",
+)
+async def search_location(
+    q: str = Query(..., min_length=1, max_length=100, description="Location search query (e.g. Delhi, Pune)"),
+    limit: int = Query(5, ge=1, le=10, description="Result limit (max 10)"),
+    provider: Optional[str] = Query(None, description="Geocoding provider (default: osm)"),
+    service: WaterBodyDiscoveryService = Depends(get_discovery_service),
+) -> LocationSearchResponse:
+    return await service.geocode_location(query=q, limit=limit, provider_name=provider)
+
+
+@router.get(
+    "/water-bodies/area",
+    response_model=AreaDiscoveryResponse,
+    summary="Discover water bodies within a radius of coordinates",
+    description="Finds lakes, reservoirs, ponds, and rivers within the specified radius (km) of given coordinates.",
+)
+async def discover_water_bodies_by_area(
+    latitude: float = Query(..., ge=-90.0, le=90.0, description="Center latitude in degrees"),
+    longitude: float = Query(..., ge=-180.0, le=180.0, description="Center longitude in degrees"),
+    radius_km: float = Query(1.0, ge=0.1, le=50.0, description="Search radius in kilometers"),
+    limit: int = Query(30, ge=1, le=60, description="Result limit (max 60)"),
+    query_location: Optional[str] = Query(None, description="Optional label for the searched location"),
+    provider: Optional[str] = Query(None, description="Discovery provider (default: osm)"),
+    service: WaterBodyDiscoveryService = Depends(get_discovery_service),
+) -> AreaDiscoveryResponse:
+    return await service.search_area(
+        latitude=latitude,
+        longitude=longitude,
+        radius_km=radius_km,
+        limit=limit,
+        query_location=query_location,
+        provider_name=provider,
+    )
 
 
 @router.get(
