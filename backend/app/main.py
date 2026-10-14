@@ -137,12 +137,20 @@ def create_app() -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         logger.warning("Validation error on %s: %s", request.url.path, exc.errors())
+        error_msg = "Invalid request parameters or payload"
+        if exc.errors():
+            first_err = exc.errors()[0]
+            msg = first_err.get("msg")
+            if msg and "Value error," in msg:
+                error_msg = msg.replace("Value error,", "").strip()
+            elif msg:
+                error_msg = msg
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=ErrorResponse(
                 error={
                     "code": "VALIDATION_ERROR",
-                    "message": "Invalid request parameters or payload",
+                    "message": error_msg,
                 }
             ).model_dump(),
         )

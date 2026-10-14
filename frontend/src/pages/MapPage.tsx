@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -38,7 +38,9 @@ import {
   WaterBodyDiscoveryResult,
   AreaDiscoveryResponse,
   GeocodedLocation,
+  WaterBody,
 } from '../api/client';
+import { FetchVisualDataModal } from '../components/FetchVisualDataModal';
 
 // ─── LocalStorage helpers ─────────────────────────────────────────────────────
 const LS_WB_KEY = 'jalnetra_selected_wb_id';
@@ -164,8 +166,12 @@ interface PerSceneProcessing {
   error: string | null;
 }
 
+export interface MapPageProps {
+  onNavigateToAnalysis?: (waterBodyId?: string) => void;
+}
+
 // ─── MapPage ──────────────────────────────────────────────────────────────────
-export const MapPage: React.FC = () => {
+export const MapPage: React.FC<MapPageProps> = ({ onNavigateToAnalysis }) => {
   // Request identity tracker to completely eliminate async race conditions
   const requestIdRef = useRef<number>(0);
   const [opProgress, setOpProgress] = useState<OperationProgress | null>(null);
@@ -174,6 +180,26 @@ export const MapPage: React.FC = () => {
   const [geoJsonData, setGeoJsonData] = useState<any | null>(null);
   const [selectedWaterBodyId, setSelectedWaterBodyId] = useState<string>('');
   const [selectedWaterBodyProps, setSelectedWaterBodyProps] = useState<any | null>(null);
+  const [isFetchVisualDataOpen, setIsFetchVisualDataOpen] = useState<boolean>(false);
+
+  const selectedWaterBodyObj: WaterBody | null = useMemo(() => {
+    if (!selectedWaterBodyId) return null;
+    const p = selectedWaterBodyProps || {};
+    return {
+      id: selectedWaterBodyId,
+      name: p.name || 'Selected Water Body',
+      normalized_name: p.normalized_name || (p.name || '').toLowerCase(),
+      country: p.country,
+      state_province: p.state_province,
+      district: p.district,
+      city: p.city,
+      source: p.source || 'osm',
+      water_body_type: p.water_body_type,
+      area_sq_km: p.area_sq_km,
+      centroid_lat: p.centroid_lat,
+      centroid_lon: p.centroid_lon,
+    };
+  }, [selectedWaterBodyId, selectedWaterBodyProps]);
 
   // ── Scenes ────────────────────────────────────────────────────────────────────
   const [scenes, setScenes] = useState<MapSceneItem[]>([]);
@@ -1416,6 +1442,27 @@ export const MapPage: React.FC = () => {
         >
           🔍 AREA DISCOVERY
         </button>
+        {selectedWaterBodyId && (
+          <>
+            <span style={styles.topStatusDivider}>|</span>
+            <button
+              style={styles.topVisualDataBtn}
+              onClick={() => setIsFetchVisualDataOpen(true)}
+              title="Fetch Visual Satellite Observations across time for this water body"
+            >
+              🛰 FETCH VISUAL DATA
+            </button>
+            {onNavigateToAnalysis && (
+              <button
+                style={styles.topAnalysisBtn}
+                onClick={() => onNavigateToAnalysis(selectedWaterBodyId)}
+                title="Open Temporal Analysis for this water body"
+              >
+                📊 ANALYSIS →
+              </button>
+            )}
+          </>
+        )}
       </div>
 
       {/* ── Prominent Operation Progress Panel ───────────────────────────── */}
@@ -1837,6 +1884,23 @@ export const MapPage: React.FC = () => {
                       <button style={styles.refocusBtn} onClick={handleFocusToWaterBody}>
                         FOCUS MAP TO WATER BODY
                       </button>
+
+                      <div style={styles.wbActionGroup}>
+                        <button
+                          style={styles.fetchVisualDataBtn}
+                          onClick={() => setIsFetchVisualDataOpen(true)}
+                        >
+                          🛰 FETCH VISUAL DATA
+                        </button>
+                        {onNavigateToAnalysis && (
+                          <button
+                            style={styles.openAnalysisBtn}
+                            onClick={() => onNavigateToAnalysis(selectedWaterBodyId)}
+                          >
+                            📈 OPEN IN ANALYSIS PAGE →
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -2226,6 +2290,20 @@ export const MapPage: React.FC = () => {
             </div>
           )}
         </FloatingPanel>
+      )}
+
+      {isFetchVisualDataOpen && selectedWaterBodyObj && (
+        <FetchVisualDataModal
+          waterBody={selectedWaterBodyObj}
+          isOpen={isFetchVisualDataOpen}
+          onClose={() => setIsFetchVisualDataOpen(false)}
+          onNavigateToAnalysis={(wbId) => {
+            setIsFetchVisualDataOpen(false);
+            if (onNavigateToAnalysis) {
+              onNavigateToAnalysis(wbId);
+            }
+          }}
+        />
       )}
     </div>
   );
@@ -3172,6 +3250,59 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     cursor: 'pointer',
     letterSpacing: '0.03em',
+  },
+  topVisualDataBtn: {
+    backgroundColor: '#0284c7',
+    border: '1px solid #0284c7',
+    color: '#ffffff',
+    borderRadius: '3px',
+    padding: '0.15rem 0.55rem',
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+    letterSpacing: '0.03em',
+  },
+  topAnalysisBtn: {
+    backgroundColor: 'transparent',
+    border: '1px solid #059669',
+    color: '#059669',
+    borderRadius: '3px',
+    padding: '0.15rem 0.55rem',
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+    letterSpacing: '0.03em',
+  },
+  wbActionGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.4rem',
+    marginTop: '0.6rem',
+  },
+  fetchVisualDataBtn: {
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '3px',
+    padding: '0.55rem 0.75rem',
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    letterSpacing: '0.04em',
+    cursor: 'pointer',
+    textAlign: 'center',
+    transition: 'background-color 0.15s ease',
+  },
+  openAnalysisBtn: {
+    backgroundColor: 'var(--color-surface)',
+    color: '#059669',
+    border: '1px solid #059669',
+    borderRadius: '3px',
+    padding: '0.45rem 0.75rem',
+    fontSize: '0.7rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+    textAlign: 'center',
+    transition: 'all 0.15s ease',
   },
   badgeDiscoveryActive: {
     fontFamily: 'var(--font-mono)',

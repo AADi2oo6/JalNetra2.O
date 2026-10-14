@@ -32,9 +32,9 @@ export interface WaterBody {
   min_lon?: number | null;
   max_lat?: number | null;
   max_lon?: number | null;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface WaterBodyListResponse {
@@ -205,6 +205,146 @@ export interface BatchImportResponse {
   already_existed_count: number;
   failed_count: number;
   results: BatchImportItemResult[];
+}
+
+// Revised Satellite Visual Data & Temporal Analysis Models
+export interface VisualDataFetchRequest {
+  from_date: string;
+  to_date: string;
+  image_count: number;
+}
+
+export interface AvailableObservationItem {
+  observation_id: string;
+  scene_id: string;
+  id: string;
+  satellite?: string;
+  platform?: string | null;
+  sensing_date: string;
+  sensing_date_str: string;
+  cloud_cover_percent: number;
+  quality_label: 'VERY CLEAR' | 'CLEAR' | 'ACCEPTABLE' | 'HIGH CLOUD';
+  is_high_cloud: boolean;
+  already_acquired?: boolean;
+  is_already_available: boolean;
+  existing_observation_id?: string | null;
+  existing_image_url?: string | null;
+  thumbnail_url?: string | null;
+  file_size_bytes?: number | null;
+}
+
+export interface AvailableObservationsResponse {
+  water_body_id: string;
+  water_body_name: string;
+  from_date: string;
+  to_date: string;
+  max_cloud: number;
+  include_high_cloud: boolean;
+  total_found: number;
+  items: AvailableObservationItem[];
+}
+
+export interface FetchSelectedVisualDataRequest {
+  observation_ids: string[];
+}
+
+export interface VisualAcquisitionJobError {
+  observation_id: string;
+  error: string;
+}
+
+export interface VisualAcquisitionJobResponse {
+  job_id: string;
+  water_body_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  current_stage: 'QUEUED' | 'SEARCHING' | 'READING AOI' | 'COMPOSITING RGB' | 'SAVING' | 'COMPLETED' | 'FAILED';
+  current_observation_id?: string | null;
+  total: number;
+  completed: number;
+  failed: number;
+  percent: number;
+  message: string;
+  results: SatelliteObservation[];
+  errors: VisualAcquisitionJobError[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SatelliteObservation {
+  id: string;
+  water_body_id: string;
+  satellite: string;
+  provider: string;
+  collection: string;
+  external_scene_id: string;
+  sensing_date: string;
+  cloud_cover_percent?: number | null;
+  aoi_bounds?: string | null;
+  aoi_geojson?: string | null;
+  local_visual_path: string;
+  image_url?: string;
+  image_width?: number | null;
+  image_height?: number | null;
+  file_size_bytes?: number | null;
+  sha256?: string | null;
+  derived_water_area_sq_km?: number | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VisualDataFetchResponse {
+  water_body_id: string;
+  water_body_name: string;
+  from_date: string;
+  to_date: string;
+  requested_count: number;
+  available_count: number;
+  acquired_count: number;
+  reused_count: number;
+  failed_count: number;
+  message: string;
+  observations: SatelliteObservation[];
+}
+
+export interface ObservationTimelineItem {
+  id: string;
+  water_body_id: string;
+  external_scene_id: string;
+  sensing_date: string;
+  sensing_date_str: string;
+  cloud_cover_percent?: number | null;
+  quality_label?: string | null;
+  image_url: string;
+  file_size_bytes?: number | null;
+  image_width?: number | null;
+  image_height?: number | null;
+  water_extent_sq_km?: number | null;
+  change_from_previous_sq_km?: number | null;
+  status: string;
+  is_extent_measured?: boolean;
+  registered_area_sq_km?: number | null;
+}
+
+export interface IndicatorPlaceholder {
+  id: string;
+  label: string;
+  description: string;
+  status: string;
+  message: string;
+  unit?: string | null;
+}
+
+export interface TemporalAnalysisResponse {
+  water_body_id: string;
+  water_body_name: string;
+  country?: string | null;
+  area_sq_km?: number | null;
+  total_observations: number;
+  from_date?: string | null;
+  to_date?: string | null;
+  timeline: ObservationTimelineItem[];
+  indicators: Record<string, IndicatorPlaceholder>;
 }
 
 // Phase 3: Satellite STAC Models
@@ -738,3 +878,105 @@ export function getWaterMaskImageUrl(
   const qs = params.toString() ? `?${params.toString()}` : '';
   return `${BASE_URL}/api/v1/processing/scenes/${encodeURIComponent(sceneId)}/water-mask/image${qs}`;
 }
+
+// ─── Revised Visual Data & Temporal Analysis APIs ─────────────────────────────
+
+export async function fetchVisualData(
+  waterBodyId: string,
+  request: VisualDataFetchRequest,
+): Promise<VisualDataFetchResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/visual-data/fetch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  return handleResponse<VisualDataFetchResponse>(response);
+}
+
+export async function getWaterBodyObservations(
+  waterBodyId: string,
+  fromDate?: string,
+  toDate?: string,
+): Promise<SatelliteObservation[]> {
+  const params = new URLSearchParams();
+  if (fromDate) params.append('from_date', fromDate);
+  if (toDate) params.append('to_date', toDate);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+
+  const response = await fetch(`${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/observations${qs}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<SatelliteObservation[]>(response);
+}
+
+export function getObservationImageUrl(waterBodyId: string, observationId: string): string {
+  return `${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/observations/${encodeURIComponent(observationId)}/image`;
+}
+
+export async function getWaterBodyTemporalAnalysis(
+  waterBodyId: string,
+  fromDate?: string,
+  toDate?: string,
+): Promise<TemporalAnalysisResponse> {
+  const params = new URLSearchParams();
+  if (fromDate) params.append('from_date', fromDate);
+  if (toDate) params.append('to_date', toDate);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+
+  const response = await fetch(`${BASE_URL}/api/v1/analysis/water-bodies/${encodeURIComponent(waterBodyId)}${qs}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<TemporalAnalysisResponse>(response);
+}
+
+export async function getAvailableVisualObservations(
+  waterBodyId: string,
+  params: {
+    from_date: string;
+    to_date: string;
+    max_cloud?: number;
+    include_high_cloud?: boolean;
+    sort?: 'newest' | 'oldest' | 'lowest_cloud';
+  },
+): Promise<AvailableObservationsResponse> {
+  const q = new URLSearchParams();
+  q.append('from_date', params.from_date);
+  q.append('to_date', params.to_date);
+  if (params.max_cloud != null) q.append('max_cloud', String(params.max_cloud));
+  if (params.include_high_cloud != null) q.append('include_high_cloud', String(params.include_high_cloud));
+  if (params.sort) q.append('sort', params.sort);
+
+  const response = await fetch(`${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/visual-data/available?${q.toString()}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<AvailableObservationsResponse>(response);
+}
+
+export async function fetchSelectedVisualData(
+  waterBodyId: string,
+  request: FetchSelectedVisualDataRequest,
+): Promise<VisualAcquisitionJobResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/visual-data/fetch-selected`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  return handleResponse<VisualAcquisitionJobResponse>(response);
+}
+
+export async function getVisualDataJobStatus(
+  waterBodyId: string,
+  jobId: string,
+): Promise<VisualAcquisitionJobResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/visual-data/jobs/${encodeURIComponent(jobId)}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<VisualAcquisitionJobResponse>(response);
+}
+

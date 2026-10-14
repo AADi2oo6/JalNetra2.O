@@ -5,6 +5,7 @@ import { Dashboard } from './pages/Dashboard';
 import { DiscoveryPage } from './pages/DiscoveryPage';
 import { SatellitePage } from './pages/SatellitePage';
 import { MapPage } from './pages/MapPage';
+import { AnalysisPage } from './pages/AnalysisPage';
 import { checkHealth, HealthStatus } from './api';
 
 class ErrorBoundary extends React.Component<
@@ -47,9 +48,24 @@ class ErrorBoundary extends React.Component<
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('map');
+  const [selectedWbIdForAnalysis, setSelectedWbIdForAnalysis] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'offline'>('checking');
   const [healthData, setHealthData] = useState<HealthStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const handleNavigateToAnalysis = useCallback((waterBodyId?: string) => {
+    if (waterBodyId) {
+      setSelectedWbIdForAnalysis(waterBodyId);
+    }
+    setCurrentTab('analysis');
+  }, []);
+
+  const handleNavigateToMap = useCallback((waterBodyId?: string) => {
+    if (waterBodyId) {
+      try { localStorage.setItem('jalnetra_selected_wb_id', waterBodyId); } catch {}
+    }
+    setCurrentTab('map');
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     setBackendStatus('checking');
@@ -92,7 +108,15 @@ export const App: React.FC = () => {
         )}
         {currentTab === 'map' && (
           <ErrorBoundary>
-            <MapPage />
+            <MapPage onNavigateToAnalysis={handleNavigateToAnalysis} />
+          </ErrorBoundary>
+        )}
+        {currentTab === 'analysis' && (
+          <ErrorBoundary>
+            <AnalysisPage
+              initialWaterBodyId={selectedWbIdForAnalysis || undefined}
+              onNavigateToMap={handleNavigateToMap}
+            />
           </ErrorBoundary>
         )}
         {currentTab === 'discovery' && <DiscoveryPage />}
@@ -105,7 +129,7 @@ export const App: React.FC = () => {
             onRefresh={fetchStatus}
           />
         )}
-        {currentTab !== 'overview' && currentTab !== 'map' && currentTab !== 'discovery' && currentTab !== 'satellite' && currentTab !== 'catalog' && (
+        {currentTab !== 'overview' && currentTab !== 'map' && currentTab !== 'analysis' && currentTab !== 'discovery' && currentTab !== 'satellite' && currentTab !== 'catalog' && (
           <div style={styles.placeholderCard}>
             <h3 style={styles.placeholderTitle}>MODULE RESERVED FOR FUTURE PHASE</h3>
             <p style={styles.placeholderDesc}>

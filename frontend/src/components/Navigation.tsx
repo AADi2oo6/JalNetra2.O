@@ -9,6 +9,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange 
   const tabs = [
     { id: 'overview', label: 'SYSTEM OVERVIEW' },
     { id: 'map', label: 'MONITORING MAP (PHASE 4)' },
+    { id: 'analysis', label: 'ANALYSIS (TIME-SERIES)' },
     { id: 'discovery', label: 'GLOBAL DISCOVERY (PHASE 2)' },
     { id: 'catalog', label: 'WATER BODY CATALOG (PHASE 1)' },
     { id: 'satellite', label: 'SENTINEL-2 / SCENES (PHASE 3)' },

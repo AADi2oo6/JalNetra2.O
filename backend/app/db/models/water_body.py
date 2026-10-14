@@ -60,6 +60,13 @@ class WaterBody(Base):
     analysis_runs = relationship(
         "AnalysisRun", back_populates="water_body", cascade="all, delete-orphan"
     )
+    # Relationship to water-body-centric satellite observations
+    observations = relationship(
+        "SatelliteObservation",
+        back_populates="water_body",
+        cascade="all, delete-orphan",
+        order_by="SatelliteObservation.sensing_date",
+    )
 
     __table_args__ = (
         Index("ix_water_bodies_name", "name"),

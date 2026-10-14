@@ -10,6 +10,7 @@ from app.services.satellite.models import (
     SceneAcquisitionResponse,
 )
 from app.services.satellite.service import SatelliteService, SatelliteServiceError
+from app.services.satellite.observation_service import SatelliteObservationService, ObservationServiceError
 from app.services.satellite.providers.stac import EarthSearchSTACProvider
 
 __all__ = [
@@ -23,5 +24,7 @@ __all__ = [
     "SceneAcquisitionResponse",
     "SatelliteService",
     "SatelliteServiceError",
+    "SatelliteObservationService",
+    "ObservationServiceError",
     "EarthSearchSTACProvider",
 ]
