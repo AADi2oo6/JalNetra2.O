@@ -6,6 +6,15 @@ import {
   TemporalAnalysisResponse,
   ObservationTimelineItem,
   WaterBody,
+  checkBandAvailability,
+  analyzeSpectralIndicator,
+  getSpectralPreviewImageUrl,
+  getSpectralSummary,
+  calculateTimeSeriesSpectral,
+  SpectralIndicatorId,
+  SpectralAnalysisResult,
+  BandAvailabilityInfo,
+  TimeSeriesSpectralResponse,
 } from '../api/client';
 import { FetchVisualDataModal } from '../components/FetchVisualDataModal';
 
@@ -32,72 +41,267 @@ const WaterBodyBoundaryOverlay: React.FC<BoundaryOverlayProps> = ({
   aoiBoundsStr,
   aoiGeoJsonStr,
 }) => {
-  if (!aoiBoundsStr || !aoiGeoJsonStr) return null;
+  if (!aoiBoundsStr && !aoiGeoJsonStr) return null;
 
   try {
-    const bounds: [number, number, number, number] =
-      typeof aoiBoundsStr === 'string' ? JSON.parse(aoiBoundsStr) : aoiBoundsStr;
-    if (!Array.isArray(bounds) || bounds.length !== 4) return null;
+    let bounds: [number, number, number, number] | null = null;
+    if (aoiBoundsStr) {
+      bounds = typeof aoiBoundsStr === 'string' ? JSON.parse(aoiBoundsStr) : aoiBoundsStr;
+    }
+
+    let polygonsCoords: Array<Array<[number, number]>> = [];
+    if (aoiGeoJsonStr) {
+      const raw = typeof aoiGeoJsonStr === 'string' ? JSON.parse(aoiGeoJsonStr) : aoiGeoJsonStr;
+      const geom = raw?.type === 'Feature' ? raw.geometry : raw;
+      if (geom?.type === 'Polygon' && geom.coordinates?.[0]) {
+        polygonsCoords.push(geom.coordinates[0]);
+      } else if (geom?.type === 'MultiPolygon' && geom.coordinates) {
+        geom.coordinates.forEach((poly: any) => {
+          if (poly && poly[0]) polygonsCoords.push(poly[0]);
+        });
+      }
+    }
+
+    // Fallback bounding box polygon if GeoJSON coordinates are missing
+    if (polygonsCoords.length === 0 && bounds && Array.isArray(bounds) && bounds.length === 4) {
+      const [w, s, e, n] = bounds;
+      polygonsCoords.push([
+        [w, s],
+        [e, s],
+        [e, n],
+        [w, n],
+        [w, s],
+      ]);
+    }
+
+    if (polygonsCoords.length === 0 || !bounds || bounds.length !== 4) return null;
 
     const [minLon, minLat, maxLon, maxLat] = bounds;
     const lonSpan = maxLon - minLon;
     const latSpan = maxLat - minLat;
     if (lonSpan <= 0 || latSpan <= 0) return null;
 
-    const raw = typeof aoiGeoJsonStr === 'string' ? JSON.parse(aoiGeoJsonStr) : aoiGeoJsonStr;
-    const geom = raw?.type === 'Feature' ? raw.geometry : raw;
-    if (!geom || !geom.coordinates) return null;
-
-    const polygonsCoords: Array<Array<[number, number]>> = [];
-    if (geom.type === 'Polygon') {
-      if (geom.coordinates[0]) polygonsCoords.push(geom.coordinates[0]);
-    } else if (geom.type === 'MultiPolygon') {
-      geom.coordinates.forEach((poly: any) => {
-        if (poly && poly[0]) polygonsCoords.push(poly[0]);
-      });
-    }
-
-    if (polygonsCoords.length === 0) return null;
-
     return (
-      <svg
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          pointerEvents: 'none',
-          zIndex: 6,
-        }}
-      >
-        {polygonsCoords.map((ring, idx) => {
-          const pointsStr = ring
-            .map(([lon, lat]) => {
-              const x = Math.min(100, Math.max(0, ((lon - minLon) / lonSpan) * 100));
-              const y = Math.min(100, Math.max(0, ((maxLat - lat) / latSpan) * 100));
-              return `${x.toFixed(2)},${y.toFixed(2)}`;
-            })
-            .join(' ');
+      <>
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+            zIndex: 6,
+          }}
+        >
+          {polygonsCoords.map((ring, idx) => {
+            const pointsStr = ring
+              .map(([lon, lat]) => {
+                const x = Math.min(100, Math.max(0, ((lon - minLon) / lonSpan) * 100));
+                const y = Math.min(100, Math.max(0, ((maxLat - lat) / latSpan) * 100));
+                return `${x.toFixed(2)},${y.toFixed(2)}`;
+              })
+              .join(' ');
 
-          return (
-            <polygon
-              key={idx}
-              points={pointsStr}
-              fill="rgba(6, 182, 212, 0.22)"
-              stroke="#06b6d4"
-              strokeWidth="1.2"
-              strokeDasharray="2.5 1.5"
-            />
-          );
-        })}
-      </svg>
+            return (
+              <React.Fragment key={idx}>
+                {/* Outer dark stroke for maximum contrast over bright terrain/clouds */}
+                <polygon
+                  points={pointsStr}
+                  fill="none"
+                  stroke="#0f172a"
+                  strokeWidth="3.2"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+                {/* Inner neon cyan dashed stroke with transparent cyan tint */}
+                <polygon
+                  points={pointsStr}
+                  fill="rgba(6, 182, 212, 0.16)"
+                  stroke="#00f0ff"
+                  strokeWidth="1.6"
+                  strokeDasharray="3.5 1.8"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              </React.Fragment>
+            );
+          })}
+        </svg>
+
+        {/* Legend Pill Badge */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '8px',
+            left: '8px',
+            backgroundColor: 'rgba(15, 23, 42, 0.88)',
+            border: '1px solid #00f0ff',
+            borderRadius: '3px',
+            padding: '2px 7px',
+            fontSize: '0.62rem',
+            fontWeight: 800,
+            color: '#00f0ff',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            pointerEvents: 'none',
+            zIndex: 10,
+            letterSpacing: '0.04em',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+          }}
+        >
+          <span style={{ fontSize: '0.75rem', lineHeight: 1 }}>━━</span> Water Body Boundary
+        </div>
+      </>
     );
   } catch (err) {
     return null;
   }
+};
+
+// ─── Spectral Indicator Metadata & Definitions ──────────────────────────────
+export interface IndicatorMeta {
+  id: SpectralIndicatorId;
+  name: string;
+  badge: string;
+  formula: string;
+  requiredBands: string;
+  description: string;
+  disclaimer: string;
+}
+
+export const INDICATORS_METADATA: Record<SpectralIndicatorId, IndicatorMeta> = {
+  ndti: {
+    id: 'ndti',
+    name: 'Turbidity / Suspended Sediment',
+    badge: 'NDTI',
+    formula: '(B04 - B03) / (B04 + B03)',
+    requiredBands: 'Red (B04), Green (B03)',
+    description:
+      'Normalized Difference Turbidity Index proxy evaluating relative suspended particulate matter and turbidity. Higher values indicate higher sediment scattering.',
+    disclaimer:
+      'Remote-sensing optical proxy; does not measure in-situ NTU (Nephelometric Turbidity Units) or calibrate depth-integrated sediment concentration.',
+  },
+  ndci: {
+    id: 'ndci',
+    name: 'Chlorophyll-a Proxy',
+    badge: 'NDCI',
+    formula: '(B05 - B04) / (B05 + B04)',
+    requiredBands: 'RedEdge 1 (B05), Red (B04)',
+    description:
+      'Normalized Difference Chlorophyll Index proxy estimating relative photosynthetic pigment absorption using Sentinel-2 red-edge reflectance.',
+    disclaimer:
+      'Surface optical proxy; does not substitute for laboratory HPLC pigment extraction (mg/m³ or µg/L) or confirm phytoplankton species composition.',
+  },
+  fai: {
+    id: 'fai',
+    name: 'Algal Activity Proxy',
+    badge: 'FAI',
+    formula: 'B05 - [B04 + (B08 - B04) × 0.226]',
+    requiredBands: 'RedEdge 1 (B05), Red (B04), NIR (B08)',
+    description:
+      'Floating Algae Index proxy detecting surface floating vegetation scums, algal mats, and emergent macrophytes.',
+    disclaimer:
+      'Surface reflectance proxy; does not confirm toxic cyanobacteria or algal blooms and cannot distinguish submerged from surface vegetation.',
+  },
+  anomaly: {
+    id: 'anomaly',
+    name: 'Surface Spectral Anomaly',
+    badge: 'ANOMALY',
+    formula: 'Z = (Current - Baseline_Mean) / Baseline_StdDev',
+    requiredBands: 'Requires ≥ 3 historical observations',
+    description:
+      'Statistical z-score anomaly evaluating current spectral behavior against the historical baseline of this specific water body.',
+    disclaimer:
+      'Identifies unusual spectral deviation from baseline reflectance. It does not by itself identify pollution source, chemical substance, or ecological hazard.',
+  },
+};
+
+const getLevelBadgeStyle = (classification: string): React.CSSProperties => {
+  const c = (classification || '').toUpperCase();
+  if (c.includes('LOW') || c === 'NORMAL') {
+    return {
+      backgroundColor: '#ecfdf5',
+      color: '#047857',
+      border: '1px solid #a7f3d0',
+      padding: '0.2rem 0.55rem',
+      borderRadius: '3px',
+      fontSize: '0.68rem',
+      fontWeight: 800,
+      letterSpacing: '0.04em',
+    };
+  }
+  if (c.includes('MODERATE') || c === 'WATCH') {
+    return {
+      backgroundColor: '#fffbeb',
+      color: '#b45309',
+      border: '1px solid #fde68a',
+      padding: '0.2rem 0.55rem',
+      borderRadius: '3px',
+      fontSize: '0.68rem',
+      fontWeight: 800,
+      letterSpacing: '0.04em',
+    };
+  }
+  if (c.includes('HIGH') || c.includes('ANOMALY')) {
+    return {
+      backgroundColor: '#fef2f2',
+      color: '#b91c1c',
+      border: '1px solid #fecaca',
+      padding: '0.2rem 0.55rem',
+      borderRadius: '3px',
+      fontSize: '0.68rem',
+      fontWeight: 800,
+      letterSpacing: '0.04em',
+    };
+  }
+  return {
+    backgroundColor: '#f1f5f9',
+    color: '#475569',
+    border: '1px solid #cbd5e1',
+    padding: '0.2rem 0.55rem',
+    borderRadius: '3px',
+    fontSize: '0.68rem',
+    fontWeight: 700,
+  };
+};
+
+const getQualityBadgeStyle = (quality: string): React.CSSProperties => {
+  const q = (quality || '').toUpperCase();
+  if (q === 'GOOD') {
+    return {
+      backgroundColor: '#ecfdf5',
+      color: '#065f46',
+      border: '1px solid #6ee7b7',
+      padding: '0.15rem 0.45rem',
+      borderRadius: '3px',
+      fontSize: '0.62rem',
+      fontWeight: 700,
+    };
+  }
+  if (q === 'LIMITED') {
+    return {
+      backgroundColor: '#fffbeb',
+      color: '#92400e',
+      border: '1px solid #fcd34d',
+      padding: '0.15rem 0.45rem',
+      borderRadius: '3px',
+      fontSize: '0.62rem',
+      fontWeight: 700,
+    };
+  }
+  return {
+    backgroundColor: '#fef2f2',
+    color: '#991b1b',
+    border: '1px solid #fca5a5',
+    padding: '0.15rem 0.45rem',
+    borderRadius: '3px',
+    fontSize: '0.62rem',
+    fontWeight: 700,
+  };
 };
 
 export const AnalysisPage: React.FC<AnalysisPageProps> = ({
@@ -134,6 +338,20 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
 
   // Fetch Visual Data Modal
   const [isFetchModalOpen, setIsFetchModalOpen] = useState<boolean>(false);
+
+  // Spectral Analysis State
+  const [spectralObsId, setSpectralObsId] = useState<string>('');
+  const [spectralResults, setSpectralResults] = useState<Record<string, SpectralAnalysisResult | null>>({});
+  const [isAnalyzing, setIsAnalyzing] = useState<Record<string, boolean>>({});
+  const [spectralError, setSpectralError] = useState<Record<string, string | null>>({});
+  const [bandAvailability, setBandAvailability] = useState<Record<string, BandAvailabilityInfo | null>>({});
+  const [isCheckingBands, setIsCheckingBands] = useState<boolean>(false);
+  const [previewModalResult, setPreviewModalResult] = useState<SpectralAnalysisResult | null>(null);
+  const [infoModalIndicator, setInfoModalIndicator] = useState<string | null>(null);
+  const [timeSeriesIndicator, setTimeSeriesIndicator] = useState<SpectralIndicatorId>('ndti');
+  const [isComputingTimeSeries, setIsComputingTimeSeries] = useState<boolean>(false);
+  const [timeSeriesResult, setTimeSeriesResult] = useState<TimeSeriesSpectralResponse | null>(null);
+  const [timeSeriesProgress, setTimeSeriesProgress] = useState<number>(0);
 
   // Load registered water bodies
   useEffect(() => {
@@ -250,6 +468,132 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
     }, 1800);
     return () => clearInterval(timer);
   }, [isPlaying, isLooping, analysisData]);
+
+  // Set default spectral observation to latest when timeline loads
+  useEffect(() => {
+    if (analysisData?.timeline && analysisData.timeline.length > 0) {
+      const latestObs = analysisData.timeline[analysisData.timeline.length - 1];
+      setSpectralObsId(prev => {
+        if (!prev || !analysisData.timeline.some(t => t.id === prev)) {
+          return latestObs.id;
+        }
+        return prev;
+      });
+    } else {
+      setSpectralObsId('');
+      setSpectralResults({});
+      setBandAvailability({});
+    }
+  }, [analysisData]);
+
+  // Load spectral indicators summary and check bands when spectral observation changes
+  useEffect(() => {
+    if (!selectedWaterBodyId || !spectralObsId) {
+      setSpectralResults({});
+      setBandAvailability({});
+      return;
+    }
+
+    let active = true;
+
+    // Load cached summary
+    getSpectralSummary(selectedWaterBodyId, spectralObsId)
+      .then(summary => {
+        if (!active) return;
+        if (summary && summary.indicators) {
+          setSpectralResults(summary.indicators);
+        }
+      })
+      .catch(() => {
+        if (active) setSpectralResults({});
+      });
+
+    // Check band availability
+    setIsCheckingBands(true);
+    const indicators: SpectralIndicatorId[] = ['ndti', 'ndci', 'fai', 'anomaly'];
+    Promise.all(
+      indicators.map(ind =>
+        checkBandAvailability(selectedWaterBodyId, spectralObsId, ind)
+          .then(info => ({ ind, info }))
+          .catch(() => ({ ind, info: null }))
+      )
+    ).then(results => {
+      if (!active) return;
+      const merged: Record<string, BandAvailabilityInfo | null> = {};
+      results.forEach(r => {
+        merged[r.ind] = r.info;
+      });
+      setBandAvailability(merged);
+      setIsCheckingBands(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedWaterBodyId, spectralObsId]);
+
+  const selectedSpectralObs = useMemo(() => {
+    return analysisData?.timeline.find(t => t.id === spectralObsId);
+  }, [analysisData, spectralObsId]);
+
+  const handleCalculateIndicator = useCallback(
+    async (indicator: SpectralIndicatorId, forceRecompute: boolean = false) => {
+      if (!selectedWaterBodyId || !spectralObsId) return;
+
+      setIsAnalyzing(prev => ({ ...prev, [indicator]: true }));
+      setSpectralError(prev => ({ ...prev, [indicator]: null }));
+
+      try {
+        const res = await analyzeSpectralIndicator(selectedWaterBodyId, {
+          observation_id: spectralObsId,
+          indicator,
+          force_recompute: forceRecompute,
+        });
+        setSpectralResults(prev => ({ ...prev, [indicator]: res }));
+      } catch (err: any) {
+        console.error(`Failed to analyze ${indicator}:`, err);
+        setSpectralError(prev => ({
+          ...prev,
+          [indicator]: err?.message || `Failed to calculate ${indicator.toUpperCase()}`,
+        }));
+      } finally {
+        setIsAnalyzing(prev => ({ ...prev, [indicator]: false }));
+      }
+    },
+    [selectedWaterBodyId, spectralObsId]
+  );
+
+  const handleCalculateAllForObs = useCallback(async () => {
+    if (!selectedWaterBodyId || !spectralObsId) return;
+    const indicators: SpectralIndicatorId[] = ['ndti', 'ndci', 'fai', 'anomaly'];
+    await Promise.all(indicators.map(ind => handleCalculateIndicator(ind, false)));
+  }, [selectedWaterBodyId, spectralObsId, handleCalculateIndicator]);
+
+  const handleRunTimeSeries = useCallback(async () => {
+    if (!selectedWaterBodyId || !analysisData?.timeline || analysisData.timeline.length === 0) return;
+
+    setIsComputingTimeSeries(true);
+    setTimeSeriesProgress(15);
+    setTimeSeriesResult(null);
+
+    const obsIds = analysisData.timeline.map(t => t.id);
+
+    try {
+      setTimeSeriesProgress(45);
+      const res = await calculateTimeSeriesSpectral(selectedWaterBodyId, {
+        observation_ids: obsIds,
+        indicator: timeSeriesIndicator,
+        force_recompute: false,
+      });
+      setTimeSeriesProgress(100);
+      setTimeSeriesResult(res);
+    } catch (err: any) {
+      console.error('Time series spectral calculation failed:', err);
+      alert(`Time series calculation failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsComputingTimeSeries(false);
+    }
+  }, [selectedWaterBodyId, analysisData, timeSeriesIndicator]);
 
   return (
     <div style={styles.container}>
@@ -462,19 +806,28 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                 <div style={styles.slideshowContainer}>
                   {/* Viewport */}
                   <div style={styles.slideshowViewport}>
-                    <img
-                      src={getFilteredUrl(currentSlide.image_url)}
-                      alt={currentSlide.sensing_date_str}
-                      style={styles.slideshowImg}
-                    />
-
-                    {/* Vector Boundary Overlay */}
-                    {showBoundary && (
-                      <WaterBodyBoundaryOverlay
-                        aoiBoundsStr={currentSlide.aoi_bounds}
-                        aoiGeoJsonStr={currentSlide.aoi_geojson}
+                    <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', maxHeight: '420px', lineHeight: 0 }}>
+                      <img
+                        src={getFilteredUrl(currentSlide.image_url)}
+                        alt={currentSlide.sensing_date_str}
+                        style={{
+                          maxHeight: '420px',
+                          maxWidth: '100%',
+                          width: 'auto',
+                          height: 'auto',
+                          display: 'block',
+                          objectFit: 'contain',
+                        }}
                       />
-                    )}
+
+                      {/* Vector Boundary Overlay */}
+                      {showBoundary && (
+                        <WaterBodyBoundaryOverlay
+                          aoiBoundsStr={currentSlide.aoi_bounds}
+                          aoiGeoJsonStr={currentSlide.aoi_geojson}
+                        />
+                      )}
+                    </div>
 
                     {/* Top Left Overlay Badge */}
                     <div style={styles.slideshowBadgeTopLeft}>
@@ -797,18 +1150,27 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                           <span style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Visual observation</span>
                         )}
                       </div>
-                      <div style={{ position: 'relative' }}>
-                        <img
-                          src={getFilteredUrl(obs1.image_url)}
-                          alt={obs1.sensing_date_str}
-                          style={styles.compareImg}
-                        />
-                        {showBoundary && (
-                          <WaterBodyBoundaryOverlay
-                            aoiBoundsStr={obs1.aoi_bounds}
-                            aoiGeoJsonStr={obs1.aoi_geojson}
+                      <div style={{ display: 'flex', justifyContent: 'center', backgroundColor: '#090d16' }}>
+                        <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', maxHeight: '380px', lineHeight: 0 }}>
+                          <img
+                            src={getFilteredUrl(obs1.image_url)}
+                            alt={obs1.sensing_date_str}
+                            style={{
+                              maxHeight: '380px',
+                              maxWidth: '100%',
+                              width: 'auto',
+                              height: 'auto',
+                              display: 'block',
+                              objectFit: 'contain',
+                            }}
                           />
-                        )}
+                          {showBoundary && (
+                            <WaterBodyBoundaryOverlay
+                              aoiBoundsStr={obs1.aoi_bounds}
+                              aoiGeoJsonStr={obs1.aoi_geojson}
+                            />
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -821,18 +1183,27 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                           <span style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Visual observation</span>
                         )}
                       </div>
-                      <div style={{ position: 'relative' }}>
-                        <img
-                          src={getFilteredUrl(obs2.image_url)}
-                          alt={obs2.sensing_date_str}
-                          style={styles.compareImg}
-                        />
-                        {showBoundary && (
-                          <WaterBodyBoundaryOverlay
-                            aoiBoundsStr={obs2.aoi_bounds}
-                            aoiGeoJsonStr={obs2.aoi_geojson}
+                      <div style={{ display: 'flex', justifyContent: 'center', backgroundColor: '#090d16' }}>
+                        <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', maxHeight: '380px', lineHeight: 0 }}>
+                          <img
+                            src={getFilteredUrl(obs2.image_url)}
+                            alt={obs2.sensing_date_str}
+                            style={{
+                              maxHeight: '380px',
+                              maxWidth: '100%',
+                              width: 'auto',
+                              height: 'auto',
+                              display: 'block',
+                              objectFit: 'contain',
+                            }}
                           />
-                        )}
+                          {showBoundary && (
+                            <WaterBodyBoundaryOverlay
+                              aoiBoundsStr={obs2.aoi_bounds}
+                              aoiGeoJsonStr={obs2.aoi_geojson}
+                            />
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -921,32 +1292,429 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
           </div>
         )}
 
-        {/* ── Section 5: Water Quality Indicators (Extensible Proxies) ────── */}
+        {/* ── Section 5: Remote-Sensing Water Quality Indicators ────── */}
         <div style={styles.sectionCard}>
           <div style={styles.sectionHeader}>
             <div>
+              <div style={styles.kicker}>SPECTRAL ANALYSIS WORKSTATION</div>
               <h3 style={styles.sectionTitle}>5. Remote-Sensing Water Quality Indicators</h3>
               <span style={styles.sectionSubtitle}>
-                Spectral proxy indicators (turbidity, chlorophyll-a, algae, anomaly) designed for lazy on-demand spectral processing
+                Lazy on-demand spectral proxies (turbidity, chlorophyll-a, algae, anomaly) calculated strictly on the water-body AOI
               </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <button
+                style={{
+                  ...styles.slideBtn,
+                  backgroundColor: '#0284c7',
+                  color: '#ffffff',
+                  fontWeight: 700,
+                  fontSize: '0.72rem',
+                  padding: '0.45rem 0.85rem',
+                }}
+                disabled={!selectedWaterBodyId || !spectralObsId || Object.values(isAnalyzing).some(Boolean)}
+                onClick={handleCalculateAllForObs}
+              >
+                {Object.values(isAnalyzing).some(Boolean) ? 'CALCULATING...' : '⚡ CALCULATE ALL 4 INDICATORS'}
+              </button>
             </div>
           </div>
 
-          <div style={styles.indicatorsGrid}>
-            {analysisData?.indicators &&
-              Object.values(analysisData.indicators).map(ind => (
-                <div key={ind.id} style={styles.indicatorCard}>
-                  <div style={styles.indHeader}>
-                    <span style={styles.indLabel}>{ind.label}</span>
-                    <span style={styles.indStatusBadge}>{ind.message}</span>
+          {/* Observation Selector Bar */}
+          <div style={styles.spectralToolbar}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', flex: 1 }}>
+              <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#1e293b', letterSpacing: '0.04em' }}>
+                ANALYSIS OBSERVATION:
+              </span>
+              <select
+                style={styles.spectralSelect}
+                value={spectralObsId}
+                onChange={e => setSpectralObsId(e.target.value)}
+              >
+                {analysisData?.timeline.map((obs, idx) => (
+                  <option key={obs.id} value={obs.id}>
+                    {obs.sensing_date_str} {idx === 0 ? '(Earliest)' : idx === analysisData.timeline.length - 1 ? '(Latest)' : ''} — Cloud: {obs.cloud_cover_percent != null ? `${obs.cloud_cover_percent.toFixed(1)}%` : '0%'}
+                  </option>
+                ))}
+              </select>
+
+              <div style={{ display: 'flex', gap: '0.35rem' }}>
+                <button
+                  style={{
+                    ...styles.quickNavBtn,
+                    backgroundColor: spectralObsId === analysisData?.timeline[0]?.id ? '#e0f2fe' : '#ffffff',
+                    color: spectralObsId === analysisData?.timeline[0]?.id ? '#0369a1' : '#475569',
+                    borderColor: spectralObsId === analysisData?.timeline[0]?.id ? '#38bdf8' : '#cbd5e1',
+                  }}
+                  onClick={() => {
+                    if (analysisData?.timeline[0]) setSpectralObsId(analysisData.timeline[0].id);
+                  }}
+                >
+                  ⏮ EARLIEST
+                </button>
+                <button
+                  style={{
+                    ...styles.quickNavBtn,
+                    backgroundColor:
+                      spectralObsId === analysisData?.timeline[analysisData.timeline.length - 1]?.id
+                        ? '#e0f2fe'
+                        : '#ffffff',
+                    color:
+                      spectralObsId === analysisData?.timeline[analysisData.timeline.length - 1]?.id
+                        ? '#0369a1'
+                        : '#475569',
+                    borderColor:
+                      spectralObsId === analysisData?.timeline[analysisData.timeline.length - 1]?.id
+                        ? '#38bdf8'
+                        : '#cbd5e1',
+                  }}
+                  onClick={() => {
+                    if (analysisData?.timeline && analysisData.timeline.length > 0) {
+                      setSpectralObsId(analysisData.timeline[analysisData.timeline.length - 1].id);
+                    }
+                  }}
+                >
+                  LATEST ⏭
+                </button>
+              </div>
+            </div>
+
+            {/* Band Availability Status Chip */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {isCheckingBands ? (
+                <span style={{ fontSize: '0.68rem', color: '#64748b' }}>Checking AOI bands...</span>
+              ) : bandAvailability['ndti'] && !bandAvailability['ndti']?.is_ready ? (
+                <div
+                  style={{
+                    ...styles.bandStatusPill,
+                    backgroundColor: '#fffbeb',
+                    borderColor: '#fde68a',
+                    color: '#b45309',
+                  }}
+                >
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#f59e0b' }} />
+                  <span>
+                    Missing bands: {bandAvailability['ndti']?.missing_bands.join(', ')} (RGB fallback active)
+                  </span>
+                </div>
+              ) : (
+                <div style={styles.bandStatusPill}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }} />
+                  <span>Sentinel-2 AOI Bands Ready</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 4 Spectral Indicator Cards */}
+          <div style={styles.spectralGrid}>
+            {(['ndti', 'ndci', 'fai', 'anomaly'] as SpectralIndicatorId[]).map(indKey => {
+              const meta = INDICATORS_METADATA[indKey];
+              const result = spectralResults[indKey];
+              const loading = isAnalyzing[indKey] || false;
+              const err = spectralError[indKey];
+
+              return (
+                <div key={indKey} style={styles.spectralCard}>
+                  {/* Card Header */}
+                  <div style={styles.spectralCardHeader}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <span style={styles.spectralCardBadge}>{meta.badge}</span>
+                        <h4 style={styles.spectralCardTitle}>{meta.name}</h4>
+                      </div>
+                      <span style={styles.spectralCardFormula}>{meta.formula}</span>
+                    </div>
+
+                    <button
+                      style={styles.infoBtn}
+                      title="View Scientific Details & Formula"
+                      onClick={() => setInfoModalIndicator(indKey)}
+                    >
+                      ⓘ
+                    </button>
                   </div>
-                  <p style={styles.indDesc}>{ind.description}</p>
-                  <div style={styles.indFooter}>
-                    <span>Index: {ind.unit || 'Normalized Proxy'}</span>
-                    <span style={styles.indDisabledText}>Requires on-demand spectral bands</span>
+
+                  {/* Body Content */}
+                  <div style={styles.spectralCardBody}>
+                    {loading ? (
+                      <div style={styles.spectralLoadingBox}>
+                        <div style={styles.spinner} />
+                        <span style={{ fontSize: '0.72rem', color: '#0284c7', fontWeight: 600 }}>
+                          Computing on AOI window...
+                        </span>
+                      </div>
+                    ) : err ? (
+                      <div style={styles.spectralErrorBox}>
+                        <span style={{ fontSize: '0.72rem', color: '#dc2626', fontWeight: 600 }}>
+                          {err}
+                        </span>
+                        <button
+                          style={styles.retryBtn}
+                          onClick={() => handleCalculateIndicator(indKey, true)}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    ) : result ? (
+                      <div>
+                        {/* Value and Level Badges */}
+                        <div style={styles.spectralValueRow}>
+                          <div>
+                            <div style={styles.spectralValueLarge}>
+                              {result.value != null ? result.value.toFixed(3) : '—'}
+                            </div>
+                            <div style={{ fontSize: '0.62rem', color: '#64748b', marginTop: '-2px' }}>
+                              Index Value (Mean)
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
+                            <span style={getLevelBadgeStyle(result.classification)}>
+                              {result.classification}
+                            </span>
+                            <span style={getQualityBadgeStyle(result.quality)}>
+                              {result.quality} QUALITY
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Pixel metrics */}
+                        <div style={styles.spectralMetricsBox}>
+                          <div style={styles.spectralMetricItem}>
+                            <span style={styles.metricLabel}>Water Mask Coverage:</span>
+                            <span style={styles.metricVal}>
+                              {result.valid_pixel_count.toLocaleString()} px ({result.valid_pixel_percent}%)
+                            </span>
+                          </div>
+                          <div style={styles.spectralMetricItem}>
+                            <span style={styles.metricLabel}>Cloud/Shadow Masked:</span>
+                            <span style={styles.metricVal}>{result.cloud_pixel_percent}%</span>
+                          </div>
+                          {result.baseline_mean != null && (
+                            <div style={styles.spectralMetricItem}>
+                              <span style={styles.metricLabel}>Historical Baseline:</span>
+                              <span style={styles.metricVal}>
+                                μ = {result.baseline_mean.toFixed(3)}, σ = {result.baseline_std?.toFixed(3)}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Description & Scientific Disclaimer */}
+                        <p style={styles.spectralClassificationDesc}>
+                          {result.classification_desc || meta.description}
+                        </p>
+                      </div>
+                    ) : (
+                      <div style={styles.spectralUncalculatedBox}>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b', lineHeight: 1.4 }}>
+                          {meta.description}
+                        </div>
+                        <div style={{ fontSize: '0.65rem', color: '#94a3b8', fontStyle: 'italic', marginTop: '0.35rem' }}>
+                          Bands required: {meta.requiredBands}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Card Actions Footer */}
+                  <div style={styles.spectralCardFooter}>
+                    {result ? (
+                      <>
+                        <button
+                          style={styles.previewBtn}
+                          onClick={() => setPreviewModalResult(result)}
+                        >
+                          🔍 VIEW PREVIEW
+                        </button>
+                        <button
+                          style={styles.recalcBtn}
+                          disabled={loading}
+                          onClick={() => handleCalculateIndicator(indKey, true)}
+                        >
+                          🔄 RECALCULATE
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        style={styles.calculateBtn}
+                        disabled={loading || !spectralObsId}
+                        onClick={() => handleCalculateIndicator(indKey, false)}
+                      >
+                        ⚡ CALCULATE {meta.badge}
+                      </button>
+                    )}
                   </div>
                 </div>
-              ))}
+              );
+            })}
+          </div>
+
+          {/* Multi-Indicator Summary Table (shown when 2+ indicators calculated) */}
+          {Object.values(spectralResults).filter(Boolean).length >= 2 && (
+            <div style={styles.multiIndicatorCard}>
+              <div style={styles.multiIndicatorHeader}>
+                <div>
+                  <h4 style={{ margin: 0, fontSize: '0.82rem', color: '#0f172a' }}>
+                    Multi-Indicator Comparison Summary ({selectedSpectralObs?.sensing_date_str})
+                  </h4>
+                  <span style={{ fontSize: '0.68rem', color: '#64748b' }}>
+                    Independent remote-sensing optical proxies presented without synthetic aggregated score to preserve scientific validity.
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table style={styles.summaryTable}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>INDICATOR</th>
+                      <th style={styles.th}>INDEX VALUE</th>
+                      <th style={styles.th}>CLASSIFICATION</th>
+                      <th style={styles.th}>CLEAR WATER COVERAGE</th>
+                      <th style={styles.th}>QUALITY</th>
+                      <th style={styles.th}>PREVIEW</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(['ndti', 'ndci', 'fai', 'anomaly'] as SpectralIndicatorId[]).map(indKey => {
+                      const res = spectralResults[indKey];
+                      if (!res) return null;
+                      return (
+                        <tr key={indKey} style={styles.tr}>
+                          <td style={styles.td}>
+                            <strong>{res.indicator_label}</strong> ({res.indicator.toUpperCase()})
+                          </td>
+                          <td style={styles.td}>
+                            <strong>{res.value != null ? res.value.toFixed(3) : '—'}</strong>
+                          </td>
+                          <td style={styles.td}>
+                            <span style={getLevelBadgeStyle(res.classification)}>{res.classification}</span>
+                          </td>
+                          <td style={styles.td}>
+                            {res.valid_pixel_count.toLocaleString()} px ({res.valid_pixel_percent}%)
+                          </td>
+                          <td style={styles.td}>
+                            <span style={getQualityBadgeStyle(res.quality)}>{res.quality}</span>
+                          </td>
+                          <td style={styles.td}>
+                            <button
+                              style={{ ...styles.quickNavBtn, padding: '0.15rem 0.45rem', fontSize: '0.62rem' }}
+                              onClick={() => setPreviewModalResult(res)}
+                            >
+                              View Map
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Time-Series Spectral Indicator Batch Calculation */}
+          <div style={styles.timeSeriesCard}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+              <div>
+                <h4 style={{ margin: 0, fontSize: '0.82rem', color: '#0f172a' }}>
+                  Time-Series Indicator Analysis Across All Observations
+                </h4>
+                <span style={{ fontSize: '0.68rem', color: '#64748b' }}>
+                  Calculate a selected indicator across every acquired observation date to monitor temporal trends.
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <select
+                  style={styles.spectralSelect}
+                  value={timeSeriesIndicator}
+                  onChange={e => setTimeSeriesIndicator(e.target.value as SpectralIndicatorId)}
+                  disabled={isComputingTimeSeries}
+                >
+                  <option value="ndti">NDTI — Turbidity / Sediment</option>
+                  <option value="ndci">NDCI — Chlorophyll-a</option>
+                  <option value="fai">FAI — Algal Activity</option>
+                  <option value="anomaly">Anomaly — Spectral Z-Score</option>
+                </select>
+
+                <button
+                  style={{
+                    ...styles.slideBtn,
+                    backgroundColor: '#0284c7',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    fontSize: '0.72rem',
+                    padding: '0.45rem 0.85rem',
+                  }}
+                  disabled={isComputingTimeSeries || !analysisData?.timeline.length}
+                  onClick={handleRunTimeSeries}
+                >
+                  {isComputingTimeSeries ? 'CALCULATING TIME-SERIES...' : 'CALCULATE ACROSS ALL OBSERVATIONS'}
+                </button>
+              </div>
+            </div>
+
+            {/* Time-Series Progress Bar */}
+            {isComputingTimeSeries && (
+              <div style={{ marginTop: '0.75rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: '#0284c7', marginBottom: '0.25rem' }}>
+                  <span>Processing AOI spectral indicators for all dates...</span>
+                  <span>{timeSeriesProgress}%</span>
+                </div>
+                <div style={styles.progressBarTrack}>
+                  <div style={{ ...styles.progressBarFill, width: `${timeSeriesProgress}%` }} />
+                </div>
+              </div>
+            )}
+
+            {/* Time-Series Results Table */}
+            {timeSeriesResult && (
+              <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
+                <table style={styles.summaryTable}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>DATE</th>
+                      <th style={styles.th}>INDICATOR</th>
+                      <th style={styles.th}>VALUE</th>
+                      <th style={styles.th}>LEVEL</th>
+                      <th style={styles.th}>VALID PIXELS</th>
+                      <th style={styles.th}>QUALITY</th>
+                      <th style={styles.th}>STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {timeSeriesResult.results.map(r => (
+                      <tr key={r.id} style={styles.tr}>
+                        <td style={styles.td}>
+                          <strong>{r.sensing_date_str}</strong>
+                        </td>
+                        <td style={styles.td}>{r.indicator_label}</td>
+                        <td style={styles.td}>
+                          <strong>{r.value != null ? r.value.toFixed(3) : '—'}</strong>
+                        </td>
+                        <td style={styles.td}>
+                          <span style={getLevelBadgeStyle(r.classification)}>{r.classification}</span>
+                        </td>
+                        <td style={styles.td}>
+                          {r.valid_pixel_count.toLocaleString()} px ({r.valid_pixel_percent}%)
+                        </td>
+                        <td style={styles.td}>
+                          <span style={getQualityBadgeStyle(r.quality)}>{r.quality}</span>
+                        </td>
+                        <td style={styles.td}>
+                          <span style={{ fontSize: '0.65rem', color: '#64748b' }}>
+                            {r.is_cached ? 'Cached' : 'Computed'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -969,18 +1737,27 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                 ✕
               </button>
             </div>
-            <div style={{ position: 'relative' }}>
-              <img
-                src={getFilteredUrl(expandedImage.image_url)}
-                alt={expandedImage.sensing_date_str}
-                style={styles.expandedImg}
-              />
-              {showBoundary && (
-                <WaterBodyBoundaryOverlay
-                  aoiBoundsStr={expandedImage.aoi_bounds}
-                  aoiGeoJsonStr={expandedImage.aoi_geojson}
+            <div style={{ display: 'flex', justifyContent: 'center', backgroundColor: '#090d16', padding: '0.5rem 0' }}>
+              <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', maxHeight: '72vh', lineHeight: 0 }}>
+                <img
+                  src={getFilteredUrl(expandedImage.image_url)}
+                  alt={expandedImage.sensing_date_str}
+                  style={{
+                    maxHeight: '72vh',
+                    maxWidth: '100%',
+                    width: 'auto',
+                    height: 'auto',
+                    display: 'block',
+                    objectFit: 'contain',
+                  }}
                 />
-              )}
+                {showBoundary && (
+                  <WaterBodyBoundaryOverlay
+                    aoiBoundsStr={expandedImage.aoi_bounds}
+                    aoiGeoJsonStr={expandedImage.aoi_geojson}
+                  />
+                )}
+              </div>
             </div>
             <div style={styles.expandedFooter}>
               <span>
@@ -1008,6 +1785,118 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
           onClose={() => setIsFetchModalOpen(false)}
           onNavigateToAnalysis={wbId => loadAnalysis(wbId)}
         />
+      )}
+
+      {/* ── Spectral Colormapped Preview Modal ─────────────────────────────── */}
+      {previewModalResult && (
+        <div style={styles.expandedOverlay} onClick={() => setPreviewModalResult(null)}>
+          <div style={{ ...styles.expandedBox, maxWidth: '640px' }} onClick={e => e.stopPropagation()}>
+            <div style={styles.expandedHeader}>
+              <div>
+                <div style={styles.kicker}>SPECTRAL INDICATOR RASTER MAP</div>
+                <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#0f172a' }}>
+                  {previewModalResult.indicator_label} ({previewModalResult.indicator.toUpperCase()}) • {previewModalResult.sensing_date_str}
+                </h3>
+              </div>
+              <button style={styles.closeBtn} onClick={() => setPreviewModalResult(null)}>
+                ✕
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', backgroundColor: '#090d16', padding: '1rem 0' }}>
+              <img
+                src={getSpectralPreviewImageUrl(selectedWaterBodyId, previewModalResult.id)}
+                alt={`${previewModalResult.indicator} preview`}
+                style={{
+                  maxHeight: '380px',
+                  maxWidth: '90%',
+                  borderRadius: '3px',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                }}
+              />
+
+              {/* Colormap Scale Legend */}
+              <div style={styles.previewLegendContainer}>
+                <span style={{ fontSize: '0.65rem', color: '#94a3b8' }}>
+                  Low ({previewModalResult.minimum != null ? previewModalResult.minimum.toFixed(2) : '-1.0'})
+                </span>
+                <div style={styles.previewLegendBar} />
+                <span style={{ fontSize: '0.65rem', color: '#94a3b8' }}>
+                  High ({previewModalResult.maximum != null ? previewModalResult.maximum.toFixed(2) : '+1.0'})
+                </span>
+              </div>
+            </div>
+
+            <div style={styles.expandedFooter}>
+              <span>Classification: <strong>{previewModalResult.classification}</strong></span>
+              <span>Valid water pixels: {previewModalResult.valid_pixel_percent}%</span>
+              <span>Quality: <strong>{previewModalResult.quality}</strong></span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Scientific Indicator Info Modal ───────────────────────────────── */}
+      {infoModalIndicator && INDICATORS_METADATA[infoModalIndicator as SpectralIndicatorId] && (
+        <div style={styles.expandedOverlay} onClick={() => setInfoModalIndicator(null)}>
+          <div style={{ ...styles.expandedBox, maxWidth: '560px' }} onClick={e => e.stopPropagation()}>
+            <div style={styles.expandedHeader}>
+              <div>
+                <div style={styles.kicker}>SCIENTIFIC SPECIFICATION & DISCLAIMER</div>
+                <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#0f172a' }}>
+                  {INDICATORS_METADATA[infoModalIndicator as SpectralIndicatorId].name}
+                </h3>
+              </div>
+              <button style={styles.closeBtn} onClick={() => setInfoModalIndicator(null)}>
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              <div>
+                <div style={{ fontSize: '0.68rem', fontWeight: 800, color: '#475569', letterSpacing: '0.04em' }}>
+                  MATHEMATICAL FORMULA:
+                </div>
+                <div style={styles.formulaCodeBox}>
+                  {INDICATORS_METADATA[infoModalIndicator as SpectralIndicatorId].formula}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '0.68rem', fontWeight: 800, color: '#475569', letterSpacing: '0.04em' }}>
+                  SENTINEL-2 BANDS USED:
+                </div>
+                <div style={{ fontSize: '0.75rem', color: '#1e293b', marginTop: '0.2rem' }}>
+                  {INDICATORS_METADATA[infoModalIndicator as SpectralIndicatorId].requiredBands}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '0.68rem', fontWeight: 800, color: '#475569', letterSpacing: '0.04em' }}>
+                  PHYSICAL PRINCIPLE & SENSITIVITY:
+                </div>
+                <p style={{ fontSize: '0.74rem', color: '#334155', lineHeight: 1.5, margin: '0.25rem 0 0 0' }}>
+                  {INDICATORS_METADATA[infoModalIndicator as SpectralIndicatorId].description}
+                </p>
+              </div>
+
+              <div style={styles.disclaimerCallout}>
+                <div style={{ fontSize: '0.68rem', fontWeight: 800, color: '#b45309', marginBottom: '0.25rem' }}>
+                  ⚠ IMPORTANT REMOTE-SENSING LIMITATION:
+                </div>
+                <div style={{ fontSize: '0.72rem', color: '#78350f', lineHeight: 1.45 }}>
+                  {INDICATORS_METADATA[infoModalIndicator as SpectralIndicatorId].disclaimer}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding: '0.75rem 1.25rem', backgroundColor: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end' }}>
+              <button style={styles.slideBtn} onClick={() => setInfoModalIndicator(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2055,5 +2944,322 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '1.1rem',
     color: '#64748b',
     cursor: 'pointer',
+  },
+  spectralToolbar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: '0.75rem',
+    padding: '0.65rem 0.85rem',
+    backgroundColor: '#f8fafc',
+    border: '1px solid #e2e8f0',
+    borderRadius: '4px',
+  },
+  spectralSelect: {
+    padding: '0.35rem 0.6rem',
+    border: '1px solid #cbd5e1',
+    borderRadius: '3px',
+    fontSize: '0.75rem',
+    color: '#0f172a',
+    backgroundColor: '#ffffff',
+    outline: 'none',
+    fontWeight: 600,
+  },
+  quickNavBtn: {
+    padding: '0.3rem 0.6rem',
+    border: '1px solid #cbd5e1',
+    borderRadius: '3px',
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
+  },
+  bandStatusPill: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.45rem',
+    padding: '0.25rem 0.6rem',
+    backgroundColor: '#ecfdf5',
+    border: '1px solid #a7f3d0',
+    borderRadius: '3px',
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    color: '#065f46',
+  },
+  spectralGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: '1rem',
+  },
+  spectralCard: {
+    backgroundColor: '#ffffff',
+    border: '1px solid #e2e8f0',
+    borderRadius: '4px',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+  },
+  spectralCardHeader: {
+    padding: '0.75rem 0.95rem',
+    borderBottom: '1px solid #f1f5f9',
+    backgroundColor: '#f8fafc',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '0.5rem',
+  },
+  spectralCardBadge: {
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    fontSize: '0.62rem',
+    fontWeight: 800,
+    padding: '0.15rem 0.4rem',
+    borderRadius: '2px',
+    letterSpacing: '0.04em',
+  },
+  spectralCardTitle: {
+    margin: 0,
+    fontSize: '0.82rem',
+    fontWeight: 700,
+    color: '#0f172a',
+  },
+  spectralCardFormula: {
+    fontSize: '0.65rem',
+    fontFamily: 'monospace',
+    color: '#64748b',
+    display: 'block',
+    marginTop: '0.15rem',
+  },
+  infoBtn: {
+    background: 'none',
+    border: '1px solid #cbd5e1',
+    borderRadius: '50%',
+    width: '20px',
+    height: '20px',
+    fontSize: '0.7rem',
+    fontWeight: 700,
+    color: '#64748b',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  spectralCardBody: {
+    padding: '0.95rem',
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+  },
+  spectralLoadingBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '1.5rem',
+    gap: '0.5rem',
+  },
+  spinner: {
+    width: '24px',
+    height: '24px',
+    border: '3px solid #e2e8f0',
+    borderTopColor: '#0284c7',
+    borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
+  },
+  spectralErrorBox: {
+    padding: '0.75rem',
+    backgroundColor: '#fef2f2',
+    border: '1px solid #fecaca',
+    borderRadius: '3px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.4rem',
+    alignItems: 'flex-start',
+  },
+  retryBtn: {
+    padding: '0.25rem 0.55rem',
+    backgroundColor: '#dc2626',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '2px',
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  spectralValueRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: '0.75rem',
+  },
+  spectralValueLarge: {
+    fontSize: '1.5rem',
+    fontWeight: 800,
+    color: '#0f172a',
+    fontFamily: 'monospace',
+    lineHeight: 1.1,
+  },
+  spectralMetricsBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem',
+    padding: '0.5rem 0.65rem',
+    backgroundColor: '#f8fafc',
+    border: '1px solid #f1f5f9',
+    borderRadius: '3px',
+    marginBottom: '0.65rem',
+  },
+  spectralMetricItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: '0.65rem',
+  },
+  metricLabel: {
+    color: '#64748b',
+    fontWeight: 600,
+  },
+  metricVal: {
+    color: '#0f172a',
+    fontWeight: 700,
+  },
+  spectralClassificationDesc: {
+    margin: 0,
+    fontSize: '0.68rem',
+    color: '#475569',
+    lineHeight: 1.4,
+  },
+  spectralUncalculatedBox: {
+    padding: '0.5rem 0',
+  },
+  spectralCardFooter: {
+    padding: '0.65rem 0.95rem',
+    backgroundColor: '#f8fafc',
+    borderTop: '1px solid #f1f5f9',
+    display: 'flex',
+    gap: '0.5rem',
+  },
+  calculateBtn: {
+    flex: 1,
+    padding: '0.45rem',
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '3px',
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+    textAlign: 'center',
+  },
+  previewBtn: {
+    flex: 1,
+    padding: '0.4rem',
+    backgroundColor: '#ffffff',
+    color: '#0f172a',
+    border: '1px solid #cbd5e1',
+    borderRadius: '3px',
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  recalcBtn: {
+    padding: '0.4rem 0.6rem',
+    backgroundColor: '#ffffff',
+    color: '#64748b',
+    border: '1px solid #cbd5e1',
+    borderRadius: '3px',
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  multiIndicatorCard: {
+    marginTop: '0.5rem',
+    padding: '1rem',
+    backgroundColor: '#ffffff',
+    border: '1px solid #e2e8f0',
+    borderRadius: '4px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.75rem',
+  },
+  multiIndicatorHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: '0.5rem',
+  },
+  summaryTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '0.72rem',
+  },
+  th: {
+    textAlign: 'left',
+    padding: '0.45rem 0.65rem',
+    backgroundColor: '#f1f5f9',
+    color: '#475569',
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    letterSpacing: '0.04em',
+    borderBottom: '1px solid #cbd5e1',
+  },
+  tr: {
+    borderBottom: '1px solid #f1f5f9',
+  },
+  td: {
+    padding: '0.5rem 0.65rem',
+    color: '#1e293b',
+    fontSize: '0.72rem',
+  },
+  timeSeriesCard: {
+    marginTop: '0.5rem',
+    padding: '1rem',
+    backgroundColor: '#ffffff',
+    border: '1px solid #e2e8f0',
+    borderRadius: '4px',
+  },
+  progressBarTrack: {
+    width: '100%',
+    height: '6px',
+    backgroundColor: '#e2e8f0',
+    borderRadius: '3px',
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#0284c7',
+    transition: 'width 0.3s ease',
+  },
+  previewLegendContainer: {
+    marginTop: '0.75rem',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.6rem',
+  },
+  previewLegendBar: {
+    width: '160px',
+    height: '10px',
+    borderRadius: '2px',
+    background: 'linear-gradient(to right, #0284c7, #10b981, #facc15, #dc2626)',
+    border: '1px solid rgba(255,255,255,0.2)',
+  },
+  formulaCodeBox: {
+    fontFamily: 'monospace',
+    backgroundColor: '#0f172a',
+    color: '#38bdf8',
+    padding: '0.5rem 0.75rem',
+    borderRadius: '4px',
+    fontSize: '0.78rem',
+    marginTop: '0.2rem',
+  },
+  disclaimerCallout: {
+    backgroundColor: '#fffbeb',
+    border: '1px solid #fde68a',
+    borderRadius: '4px',
+    padding: '0.65rem 0.85rem',
   },
 };

@@ -987,3 +987,149 @@ export async function getVisualDataJobStatus(
   return handleResponse<VisualAcquisitionJobResponse>(response);
 }
 
+// ─── Spectral Analysis Interfaces & Functions ──────────────────────────────
+
+export type SpectralIndicatorId = 'ndti' | 'ndci' | 'fai' | 'anomaly';
+
+export interface BandAvailabilityInfo {
+  observation_id: string;
+  external_scene_id: string;
+  indicator: string;
+  required_bands: string[];
+  available_bands: string[];
+  missing_bands: string[];
+  is_ready: boolean;
+  message: string;
+}
+
+export interface SpectralAnalysisResult {
+  id: string;
+  water_body_id: string;
+  water_body_name: string;
+  observation_id: string;
+  external_scene_id: string;
+  sensing_date: string;
+  sensing_date_str: string;
+  indicator: string;
+  indicator_label: string;
+  index_name: string;
+  value: number | null;
+  mean: number | null;
+  median: number | null;
+  std: number | null;
+  minimum: number | null;
+  maximum: number | null;
+  valid_pixel_count: number;
+  total_water_pixels: number;
+  valid_pixel_percent: number;
+  cloud_pixel_percent: number;
+  quality: 'GOOD' | 'LIMITED' | 'INSUFFICIENT';
+  quality_reason?: string | null;
+  classification: string;
+  classification_desc: string;
+  baseline_mean?: number | null;
+  baseline_std?: number | null;
+  anomaly_score?: number | null;
+  preview_url?: string | null;
+  formula: string;
+  disclaimer: string;
+  required_bands: string[];
+  available_bands: string[];
+  missing_bands: string[];
+  formula_version: string;
+  processing_version: string;
+  is_cached: boolean;
+  created_at: string;
+}
+
+export interface MultiIndicatorSummary {
+  water_body_id: string;
+  observation_id: string;
+  sensing_date_str: string;
+  indicators: Record<string, SpectralAnalysisResult | null>;
+}
+
+export interface TimeSeriesSpectralResponse {
+  water_body_id: string;
+  water_body_name: string;
+  indicator: string;
+  total_requested: number;
+  total_analyzed: number;
+  results: SpectralAnalysisResult[];
+}
+
+export async function checkBandAvailability(
+  waterBodyId: string,
+  observationId: string,
+  indicator: SpectralIndicatorId,
+): Promise<BandAvailabilityInfo> {
+  const response = await fetch(
+    `${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/spectral/bands?observation_id=${encodeURIComponent(observationId)}&indicator=${encodeURIComponent(indicator)}`,
+    { headers: { 'Accept': 'application/json' } }
+  );
+  return handleResponse<BandAvailabilityInfo>(response);
+}
+
+export async function analyzeSpectralIndicator(
+  waterBodyId: string,
+  request: {
+    observation_id: string;
+    indicator: SpectralIndicatorId;
+    force_recompute?: boolean;
+  },
+): Promise<SpectralAnalysisResult> {
+  const response = await fetch(
+    `${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/spectral/analyze`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(request),
+    }
+  );
+  return handleResponse<SpectralAnalysisResult>(response);
+}
+
+export function getSpectralPreviewImageUrl(
+  waterBodyId: string,
+  resultId: string,
+): string {
+  return `${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/spectral/results/${encodeURIComponent(resultId)}/image`;
+}
+
+export async function getSpectralSummary(
+  waterBodyId: string,
+  observationId: string,
+): Promise<MultiIndicatorSummary> {
+  const response = await fetch(
+    `${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/spectral/summary?observation_id=${encodeURIComponent(observationId)}`,
+    { headers: { 'Accept': 'application/json' } }
+  );
+  return handleResponse<MultiIndicatorSummary>(response);
+}
+
+export async function calculateTimeSeriesSpectral(
+  waterBodyId: string,
+  request: {
+    observation_ids: string[];
+    indicator: SpectralIndicatorId;
+    force_recompute?: boolean;
+  },
+): Promise<TimeSeriesSpectralResponse> {
+  const response = await fetch(
+    `${BASE_URL}/api/v1/water-bodies/${encodeURIComponent(waterBodyId)}/spectral/time-series`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(request),
+    }
+  );
+  return handleResponse<TimeSeriesSpectralResponse>(response);
+}
+
+

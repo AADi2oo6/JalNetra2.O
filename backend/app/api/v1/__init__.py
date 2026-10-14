@@ -8,6 +8,7 @@ from app.api.v1.map import router as map_router
 from app.api.v1.processing import router as processing_router
 from app.api.v1.visual_data import router as visual_data_router
 from app.api.v1.analysis import router as analysis_router
+from app.api.v1.spectral import router as spectral_router
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(health_router)
@@ -19,3 +20,5 @@ api_v1_router.include_router(map_router)
 api_v1_router.include_router(processing_router)
 api_v1_router.include_router(visual_data_router)
 api_v1_router.include_router(analysis_router)
+api_v1_router.include_router(spectral_router)
+

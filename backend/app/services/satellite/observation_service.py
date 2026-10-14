@@ -946,6 +946,22 @@ class SatelliteObservationService:
             if not bounds_val and wb.min_lon is not None:
                 bounds_val = json.dumps([wb.min_lon, wb.min_lat, wb.max_lon, wb.max_lat])
             geojson_val = obs.aoi_geojson or wb.geometry_geojson
+            if not geojson_val and bounds_val:
+                try:
+                    b = json.loads(bounds_val)
+                    if isinstance(b, list) and len(b) == 4:
+                        geojson_val = json.dumps({
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [b[0], b[1]],
+                                [b[2], b[1]],
+                                [b[2], b[3]],
+                                [b[0], b[3]],
+                                [b[0], b[1]],
+                            ]]
+                        })
+                except Exception:
+                    pass
 
             item = ObservationTimelineItem(
                 id=obs.id,
