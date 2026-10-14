@@ -257,12 +257,16 @@ export interface VisualAcquisitionJobResponse {
   job_id: string;
   water_body_id: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
-  current_stage: 'QUEUED' | 'SEARCHING' | 'READING AOI' | 'COMPOSITING RGB' | 'SAVING' | 'COMPLETED' | 'FAILED';
+  current_stage: 'QUEUED' | 'SEARCHING' | 'READING AOI' | 'COMPOSITING RGB' | 'SAVING' | 'COMPLETED' | 'FAILED' | string;
   current_observation_id?: string | null;
+  current_scene_id?: string | null;
+  current_index?: number;
   total: number;
   completed: number;
+  reused?: number;
   failed: number;
   percent: number;
+  details?: string | null;
   message: string;
   results: SatelliteObservation[];
   errors: VisualAcquisitionJobError[];
@@ -323,7 +327,10 @@ export interface ObservationTimelineItem {
   change_from_previous_sq_km?: number | null;
   status: string;
   is_extent_measured?: boolean;
+  is_demo_extent?: boolean;
   registered_area_sq_km?: number | null;
+  aoi_bounds?: string | null;
+  aoi_geojson?: string | null;
 }
 
 export interface IndicatorPlaceholder {

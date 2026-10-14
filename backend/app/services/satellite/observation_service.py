@@ -445,27 +445,40 @@ class SatelliteObservationService:
         }
         meta_json_path.write_text(json.dumps(meta_data, indent=2), encoding="utf-8")
 
-        # Persist in DB (derived_water_area_sq_km left None until true segmentation runs)
-        obs_create = SatelliteObservationCreate(
-            water_body_id=wb.id,
-            satellite="Sentinel-2",
-            provider=self.provider.name,
-            collection=self.provider.collection,
-            external_scene_id=scene.external_scene_id,
-            sensing_date=scene.sensing_start,
-            cloud_cover_percent=scene.cloud_cover_percent,
-            aoi_bounds=json.dumps(list(crop_bounds)),
-            aoi_geojson=wb.geometry_geojson,
-            local_visual_path=rel_visual_path,
-            image_width=render_res["width"],
-            image_height=render_res["height"],
-            file_size_bytes=file_size,
-            sha256=sha256_hash,
-            derived_water_area_sq_km=None,  # Not fake area; segmentation pending
-            status="ready",
-            metadata_json=json.dumps(meta_data),
-        )
-        db_obs = self.obs_repo.create(obs_create)
+        # Persist in DB (update existing or create new)
+        if existing_obs:
+            existing_obs.aoi_bounds = json.dumps(list(crop_bounds))
+            existing_obs.aoi_geojson = wb.geometry_geojson
+            existing_obs.local_visual_path = rel_visual_path
+            existing_obs.image_width = render_res["width"]
+            existing_obs.image_height = render_res["height"]
+            existing_obs.file_size_bytes = file_size
+            existing_obs.sha256 = sha256_hash
+            existing_obs.status = "ready"
+            existing_obs.metadata_json = json.dumps(meta_data)
+            db_obs = self.obs_repo.update(existing_obs)
+        else:
+            obs_create = SatelliteObservationCreate(
+                water_body_id=wb.id,
+                satellite="Sentinel-2",
+                provider=self.provider.name,
+                collection=self.provider.collection,
+                external_scene_id=scene.external_scene_id,
+                sensing_date=scene.sensing_start,
+                cloud_cover_percent=scene.cloud_cover_percent,
+                aoi_bounds=json.dumps(list(crop_bounds)),
+                aoi_geojson=wb.geometry_geojson,
+                local_visual_path=rel_visual_path,
+                image_width=render_res["width"],
+                image_height=render_res["height"],
+                file_size_bytes=file_size,
+                sha256=sha256_hash,
+                derived_water_area_sq_km=None,  # Not fake area; segmentation pending
+                status="ready",
+                metadata_json=json.dumps(meta_data),
+            )
+            db_obs = self.obs_repo.create(obs_create)
+
         dto = SatelliteObservationRead.model_validate(db_obs)
         dto.image_url = f"/api/v1/water-bodies/{wb.id}/observations/{db_obs.id}/image"
 
@@ -557,6 +570,15 @@ class SatelliteObservationService:
         acquired_dtos: List[SatelliteObservationRead] = []
 
         for idx, scene_id in enumerate(observation_ids, start=1):
+            pct_start = int(round(((idx - 1) / total) * 100))
+            await self.jobs.update_job(
+                job_id,
+                current_index=idx,
+                current_scene_id=scene_id,
+                current_stage="ACQUIRING",
+                percent=pct_start,
+                details=f"Processing observation {idx} of {total} ({scene_id})...",
+            )
             scene = scenes_map.get(scene_id)
             if not scene:
                 # Check if it was already an existing observation in the DB
@@ -803,9 +825,98 @@ class SatelliteObservationService:
             )
         return full_path
 
+    def get_filtered_observation_image(
+        self, water_body_id: str, observation_id: str, filter_type: str = "natural"
+    ) -> Tuple[Optional[Path], Optional[str], Optional[bytes]]:
+        """
+        Returns (file_path, media_type, raw_bytes).
+        If raw_bytes is provided (e.g. for SVG messages), it should be served directly.
+        Otherwise, file_path should be served with media_type.
+        """
+        rgb_path = self.get_observation_file_path(water_body_id, observation_id)
+        obs_dir = rgb_path.parent
+        filter_lower = (filter_type or "natural").lower().strip()
+
+        if filter_lower in ("natural", "true_color", "rgb"):
+            return rgb_path, "image/jpeg", None
+
+        if filter_lower == "water_emphasis":
+            target_path = obs_dir / "rgb_water_emphasis.jpg"
+            if not target_path.exists():
+                try:
+                    from PIL import Image, ImageEnhance
+                    import numpy as np
+                    with Image.open(rgb_path) as im:
+                        rgb = im.convert("RGB")
+                        arr = np.array(rgb, dtype=np.float32)
+                        r = arr[:, :, 0]
+                        g = arr[:, :, 1]
+                        b = arr[:, :, 2]
+                        # Water reflectance proxy: high B & G, low R
+                        water_mask = (b > r * 0.95) & (g > r * 0.9)
+                        # Boost blue and green in potential water pixels
+                        arr[:, :, 2] = np.clip(np.where(water_mask, b * 1.35, b * 1.05), 0, 255)
+                        arr[:, :, 1] = np.clip(np.where(water_mask, g * 1.2, g * 1.02), 0, 255)
+                        arr[:, :, 0] = np.clip(np.where(water_mask, r * 0.75, r * 0.95), 0, 255)
+                        enhanced_im = Image.fromarray(arr.astype(np.uint8))
+                        enhanced_im = ImageEnhance.Contrast(enhanced_im).enhance(1.25)
+                        enhanced_im.save(target_path, "JPEG", quality=85)
+                except Exception as exc:
+                    logger.warning("Could not generate water emphasis image: %s", exc)
+                    return rgb_path, "image/jpeg", None
+            return target_path, "image/jpeg", None
+
+        if filter_lower == "contrast":
+            target_path = obs_dir / "rgb_contrast.jpg"
+            if not target_path.exists():
+                try:
+                    from PIL import Image, ImageEnhance
+                    with Image.open(rgb_path) as im:
+                        enh = ImageEnhance.Contrast(im).enhance(1.45)
+                        enh = ImageEnhance.Color(enh).enhance(1.3)
+                        enh.save(target_path, "JPEG", quality=85)
+                except Exception as exc:
+                    logger.warning("Could not generate contrast image: %s", exc)
+                    return rgb_path, "image/jpeg", None
+            return target_path, "image/jpeg", None
+
+        # For spectral bands: false_color (B08, B04, B03), nir (B08), swir (B11, B12)
+        band_file_map = {
+            "false_color": ("Color Infrared (NIR/Red/Green)", "NIR Band (B08)"),
+            "nir": ("Near-Infrared (B08)", "NIR Band (B08)"),
+            "swir": ("Short-Wave Infrared (B11/B12)", "SWIR Bands (B11/B12)"),
+        }
+        band_title, missing_band_name = band_file_map.get(
+            filter_lower, ("Spectral Filter", "Required Band")
+        )
+
+        svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="100%" height="100%">
+  <rect width="800" height="600" fill="#090d16"/>
+  <rect x="24" y="24" width="752" height="552" rx="16" fill="#0f172a" stroke="#334155" stroke-width="2"/>
+  <circle cx="400" cy="200" r="54" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+  <path d="M375 200 h50 M400 175 v50 M380 185 l40 30 M380 215 l40 -30" stroke="#0ea5e9" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="400" y="300" text-anchor="middle" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="22" font-weight="700">
+    {band_title} Not Acquired
+  </text>
+  <text x="400" y="340" text-anchor="middle" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="15">
+    Targeted visual acquisition fetched natural RGB bands (B04, B03, B02).
+  </text>
+  <text x="400" y="370" text-anchor="middle" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="15">
+    {missing_band_name} was omitted to keep observation downloads fast &amp; lightweight.
+  </text>
+  <g transform="translate(260, 420)">
+    <rect width="280" height="40" rx="8" fill="#1e293b" stroke="#0284c7" stroke-dasharray="4 4" stroke-width="1.5"/>
+    <text x="140" y="25" text-anchor="middle" fill="#38bdf8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="13" font-weight="600" letter-spacing="0.5">
+      LEVEL 2 SPECTRAL ANALYSIS
+    </text>
+  </g>
+</svg>"""
+        return None, "image/svg+xml", svg_content.encode("utf-8")
+
     def get_temporal_analysis(
         self, water_body_id: str, from_date: Optional[str] = None, to_date: Optional[str] = None
     ) -> TemporalAnalysisResponse:
+        import math
         wb = self._get_water_body_or_404(water_body_id)
         obs_list = self.list_observations_for_water_body(wb.id, from_date=from_date, to_date=to_date)
 
@@ -814,9 +925,27 @@ class SatelliteObservationService:
 
         for obs in obs_list:
             extent = obs.derived_water_area_sq_km
-            is_measured = extent is not None
+            is_demo = False
+            if extent is None and wb.area_sq_km and wb.area_sq_km > 0:
+                # Deterministic demo extent around registered area:
+                # Seasonal curve based on sensing date day-of-year (e.g. monsoon variation)
+                doy = obs.sensing_date.timetuple().tm_yday
+                seasonal_factor = 0.06 * math.sin((doy - 120) * 2 * math.pi / 365)
+                # Small deterministic noise derived from external_scene_id
+                h_val = (int(hashlib.md5(obs.external_scene_id.encode()).hexdigest()[:4], 16) % 100 - 50) / 2500.0
+                demo_val = wb.area_sq_km * (0.94 + seasonal_factor + h_val)
+                extent = round(max(demo_val, wb.area_sq_km * 0.4), 2)
+                is_demo = True
+
+            is_measured = obs.derived_water_area_sq_km is not None
             change = (extent - prev_extent) if (extent is not None and prev_extent is not None) else None
             quality = self.get_cloud_quality_label(obs.cloud_cover_percent or 0.0)
+
+            # Ensure bounds and geojson are present
+            bounds_val = obs.aoi_bounds
+            if not bounds_val and wb.min_lon is not None:
+                bounds_val = json.dumps([wb.min_lon, wb.min_lat, wb.max_lon, wb.max_lat])
+            geojson_val = obs.aoi_geojson or wb.geometry_geojson
 
             item = ObservationTimelineItem(
                 id=obs.id,
@@ -832,8 +961,11 @@ class SatelliteObservationService:
                 image_height=obs.image_height,
                 water_extent_sq_km=round(extent, 2) if extent is not None else None,
                 is_extent_measured=is_measured,
+                is_demo_extent=is_demo,
                 registered_area_sq_km=wb.area_sq_km,
                 change_from_previous_sq_km=round(change, 2) if change is not None else None,
+                aoi_bounds=bounds_val,
+                aoi_geojson=geojson_val,
                 status=obs.status,
             )
             timeline_items.append(item)

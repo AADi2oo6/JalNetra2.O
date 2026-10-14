@@ -523,47 +523,64 @@ export const FetchVisualDataModal: React.FC<FetchVisualDataModalProps> = ({
           {/* STEP 3: ACQUIRING PROGRESS */}
           {step === 'acquiring' && (
             <div style={styles.progressContainer}>
-              <div style={styles.progressHeaderRow}>
-                <div style={styles.stagePill}>
-                  STAGE: {jobStatus?.current_stage || 'INITIALIZING'}
-                </div>
-                <div style={styles.progressPercentage}>
-                  {jobStatus?.percent || 0}%
-                </div>
-              </div>
+              {(() => {
+                const total = jobStatus?.total || selectedObservationIds.length || 1;
+                const completed = (jobStatus?.completed || 0) + (jobStatus?.reused || 0);
+                const failed = jobStatus?.failed || 0;
+                const processed = completed + failed;
+                const currentIdx = jobStatus?.current_index || Math.min(processed + 1, total);
+                const computedPct = Math.round((processed / total) * 100);
+                const displayPercent = jobStatus?.status === 'completed'
+                  ? 100
+                  : Math.min(99, Math.max(jobStatus?.percent || 0, computedPct));
 
-              {/* Progress Bar */}
-              <div style={styles.progressBarBg}>
-                <div
-                  style={{
-                    ...styles.progressBarFill,
-                    width: `${jobStatus?.percent || 0}%`,
-                  }}
-                />
-              </div>
+                return (
+                  <>
+                    <div style={styles.progressHeaderRow}>
+                      <div style={styles.stagePill}>
+                        STAGE: {jobStatus?.current_stage || 'ACQUIRING'}
+                      </div>
+                      <div style={styles.progressPercentage}>
+                        {displayPercent}%
+                      </div>
+                    </div>
 
-              {/* Live Status Message */}
-              <div style={styles.liveMessage}>
-                {jobStatus?.message || 'Contacting satellite archive...'}
-              </div>
+                    {/* Progress Bar */}
+                    <div style={styles.progressBarBg}>
+                      <div
+                        style={{
+                          ...styles.progressBarFill,
+                          width: `${displayPercent}%`,
+                          transition: 'width 0.3s ease-in-out',
+                        }}
+                      />
+                    </div>
 
-              {/* Counters */}
-              <div style={styles.jobStatsRow}>
-                <div style={styles.jobStatItem}>
-                  <span style={styles.jobStatLabel}>TOTAL</span>
-                  <span style={styles.jobStatVal}>{jobStatus?.total || selectedObservationIds.length}</span>
-                </div>
-                <div style={styles.jobStatItem}>
-                  <span style={styles.jobStatLabel}>COMPLETED</span>
-                  <span style={{ ...styles.jobStatVal, color: '#16a34a' }}>{jobStatus?.completed || 0}</span>
-                </div>
-                <div style={styles.jobStatItem}>
-                  <span style={styles.jobStatLabel}>FAILED / UNUSABLE</span>
-                  <span style={{ ...styles.jobStatVal, color: jobStatus?.failed ? '#dc2626' : '#64748b' }}>
-                    {jobStatus?.failed || 0}
-                  </span>
-                </div>
-              </div>
+                    {/* Live Status Message */}
+                    <div style={styles.liveMessage}>
+                      {jobStatus?.details || jobStatus?.message || `Processing observation ${currentIdx} of ${total}...`}
+                    </div>
+
+                    {/* Counters */}
+                    <div style={styles.jobStatsRow}>
+                      <div style={styles.jobStatItem}>
+                        <span style={styles.jobStatLabel}>TOTAL</span>
+                        <span style={styles.jobStatVal}>{total}</span>
+                      </div>
+                      <div style={styles.jobStatItem}>
+                        <span style={styles.jobStatLabel}>COMPLETED</span>
+                        <span style={{ ...styles.jobStatVal, color: '#16a34a' }}>{completed}</span>
+                      </div>
+                      <div style={styles.jobStatItem}>
+                        <span style={styles.jobStatLabel}>FAILED / UNUSABLE</span>
+                        <span style={{ ...styles.jobStatVal, color: failed > 0 ? '#dc2626' : '#64748b' }}>
+                          {failed}
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
 
               <div style={styles.noteBox}>
                 Fetching direct cropped AOIs for {waterBody.name} without downloading full 100MB Sentinel-2 scenes. Please do not refresh.

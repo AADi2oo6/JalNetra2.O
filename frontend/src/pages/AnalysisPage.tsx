@@ -14,6 +14,92 @@ interface AnalysisPageProps {
   onNavigateToMap?: (waterBodyId?: string) => void;
 }
 
+export type VisualFilterType =
+  | 'natural'
+  | 'water_emphasis'
+  | 'contrast'
+  | 'false_color'
+  | 'nir'
+  | 'swir';
+
+// ─── Water Body Boundary SVG Overlay Component ──────────────────────────────
+interface BoundaryOverlayProps {
+  aoiBoundsStr?: string | null;
+  aoiGeoJsonStr?: string | null;
+}
+
+const WaterBodyBoundaryOverlay: React.FC<BoundaryOverlayProps> = ({
+  aoiBoundsStr,
+  aoiGeoJsonStr,
+}) => {
+  if (!aoiBoundsStr || !aoiGeoJsonStr) return null;
+
+  try {
+    const bounds: [number, number, number, number] =
+      typeof aoiBoundsStr === 'string' ? JSON.parse(aoiBoundsStr) : aoiBoundsStr;
+    if (!Array.isArray(bounds) || bounds.length !== 4) return null;
+
+    const [minLon, minLat, maxLon, maxLat] = bounds;
+    const lonSpan = maxLon - minLon;
+    const latSpan = maxLat - minLat;
+    if (lonSpan <= 0 || latSpan <= 0) return null;
+
+    const raw = typeof aoiGeoJsonStr === 'string' ? JSON.parse(aoiGeoJsonStr) : aoiGeoJsonStr;
+    const geom = raw?.type === 'Feature' ? raw.geometry : raw;
+    if (!geom || !geom.coordinates) return null;
+
+    const polygonsCoords: Array<Array<[number, number]>> = [];
+    if (geom.type === 'Polygon') {
+      if (geom.coordinates[0]) polygonsCoords.push(geom.coordinates[0]);
+    } else if (geom.type === 'MultiPolygon') {
+      geom.coordinates.forEach((poly: any) => {
+        if (poly && poly[0]) polygonsCoords.push(poly[0]);
+      });
+    }
+
+    if (polygonsCoords.length === 0) return null;
+
+    return (
+      <svg
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 6,
+        }}
+      >
+        {polygonsCoords.map((ring, idx) => {
+          const pointsStr = ring
+            .map(([lon, lat]) => {
+              const x = Math.min(100, Math.max(0, ((lon - minLon) / lonSpan) * 100));
+              const y = Math.min(100, Math.max(0, ((maxLat - lat) / latSpan) * 100));
+              return `${x.toFixed(2)},${y.toFixed(2)}`;
+            })
+            .join(' ');
+
+          return (
+            <polygon
+              key={idx}
+              points={pointsStr}
+              fill="rgba(6, 182, 212, 0.22)"
+              stroke="#06b6d4"
+              strokeWidth="1.2"
+              strokeDasharray="2.5 1.5"
+            />
+          );
+        })}
+      </svg>
+    );
+  } catch (err) {
+    return null;
+  }
+};
+
 export const AnalysisPage: React.FC<AnalysisPageProps> = ({
   initialWaterBodyId,
   onNavigateToMap,
@@ -26,7 +112,18 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Comparison state
+  // Visual Analysis Filters
+  const [visualFilter, setVisualFilter] = useState<VisualFilterType>('natural');
+
+  // Boundary Overlay
+  const [showBoundary, setShowBoundary] = useState<boolean>(false);
+
+  // Slideshow State
+  const [slideshowIdx, setSlideshowIdx] = useState<number>(0);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [isLooping, setIsLooping] = useState<boolean>(true);
+
+  // Comparison State
   const [compareId1, setCompareId1] = useState<string>('');
   const [compareId2, setCompareId2] = useState<string>('');
   const [comparisonMode, setComparisonMode] = useState<'side-by-side' | 'slider'>('side-by-side');
@@ -67,7 +164,9 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
       .catch(err => {
         console.error('Failed to load water bodies:', err);
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Load temporal analysis data when water body changes
@@ -98,6 +197,8 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
     if (selectedWaterBodyId) {
       localStorage.setItem('jalnetra_selected_wb_id', selectedWaterBodyId);
       loadAnalysis(selectedWaterBodyId);
+      setSlideshowIdx(0);
+      setIsPlaying(false);
     }
   }, [selectedWaterBodyId, loadAnalysis]);
 
@@ -121,6 +222,34 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
     if (first == null || last == null) return null;
     return last - first;
   }, [analysisData]);
+
+  // Image filter URL resolver
+  const getFilteredUrl = useCallback(
+    (baseUrl: string) => {
+      if (!baseUrl) return '';
+      const resolved = resolveApiUrl(baseUrl);
+      if (visualFilter === 'natural') return resolved;
+      const sep = resolved.includes('?') ? '&' : '?';
+      return `${resolved}${sep}filter=${visualFilter}`;
+    },
+    [visualFilter]
+  );
+
+  // Slideshow auto-advance effect (1.8s)
+  useEffect(() => {
+    if (!isPlaying || !analysisData?.timeline || analysisData.timeline.length === 0) return;
+    const timer = setInterval(() => {
+      setSlideshowIdx(prev => {
+        if (prev < analysisData.timeline.length - 1) {
+          return prev + 1;
+        }
+        if (isLooping) return 0;
+        setIsPlaying(false);
+        return prev;
+      });
+    }, 1800);
+    return () => clearInterval(timer);
+  }, [isPlaying, isLooping, analysisData]);
 
   return (
     <div style={styles.container}>
@@ -182,14 +311,16 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
             <div style={styles.statCell}>
               <span style={styles.statLabel}>WATER BODY</span>
               <span style={styles.statValuePrimary}>{selectedWaterBody.name}</span>
-              <span style={styles.statSub}>{selectedWaterBody.water_body_type || 'lake'} • {selectedWaterBody.country || 'India'}</span>
+              <span style={styles.statSub}>
+                {selectedWaterBody.water_body_type || 'lake'} • {selectedWaterBody.country || 'India'}
+              </span>
             </div>
             <div style={styles.statCell}>
-              <span style={styles.statLabel}>REGISTERED AREA</span>
+              <span style={styles.statLabel}>REGISTERED BASIN AREA</span>
               <span style={styles.statValue}>
                 {selectedWaterBody.area_sq_km ? `${selectedWaterBody.area_sq_km.toFixed(2)} km²` : 'N/A'}
               </span>
-              <span style={styles.statSub}>Target extent</span>
+              <span style={styles.statSub}>Official boundary benchmark</span>
             </div>
             <div style={styles.statCell}>
               <span style={styles.statLabel}>OBSERVATIONS</span>
@@ -234,14 +365,243 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
           </div>
         )}
 
-        {/* ── Section 1: Chronological Image Gallery ─────────────────────── */}
+        {/* ── Analysis Controls Toolbar: Filters & Boundary Marking ──────── */}
+        {analysisData && analysisData.timeline.length > 0 && (
+          <div style={styles.toolbarBanner}>
+            <div style={styles.toolbarLeft}>
+              <div style={styles.toolbarItem}>
+                <label style={styles.toolbarLabel}>VISUAL ANALYSIS FILTER:</label>
+                <select
+                  style={styles.toolbarSelect}
+                  value={visualFilter}
+                  onChange={e => setVisualFilter(e.target.value as VisualFilterType)}
+                >
+                  <option value="natural">Natural Color (True RGB: B04, B03, B02)</option>
+                  <option value="water_emphasis">Water Emphasis (Enhanced Reflectance)</option>
+                  <option value="contrast">Vegetation / Water Contrast</option>
+                  <option value="false_color">False Color Vegetation (NIR/Red/Green)</option>
+                  <option value="nir">NIR View (Near-Infrared B08)</option>
+                  <option value="swir">SWIR View (Short-wave Infrared B11/B12)</option>
+                </select>
+              </div>
+
+              <label style={styles.boundaryToggleLabel}>
+                <input
+                  type="checkbox"
+                  checked={showBoundary}
+                  onChange={e => setShowBoundary(e.target.checked)}
+                  style={{ cursor: 'pointer', accentColor: '#0284c7' }}
+                />
+                <span style={{ fontWeight: 700, color: showBoundary ? '#0284c7' : '#475569' }}>
+                  SHOW WATER-BODY BOUNDARY
+                </span>
+                {showBoundary && (
+                  <span style={styles.boundaryPill}>ACTIVE</span>
+                )}
+              </label>
+            </div>
+
+            <div style={styles.toolbarRight}>
+              <span style={{ fontSize: '0.68rem', color: '#64748b' }}>
+                Active filter applied to Slideshow, Gallery, and Temporal Comparison
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ── Section 1: Temporal Change Slideshow (Oldest → Newest) ──────── */}
         {analysisData && analysisData.timeline.length > 0 && (
           <div style={styles.sectionCard}>
             <div style={styles.sectionHeader}>
               <div>
-                <h3 style={styles.sectionTitle}>1. Chronological Observation History</h3>
+                <h3 style={styles.sectionTitle}>1. Temporal Change Slideshow</h3>
                 <span style={styles.sectionSubtitle}>
-                  {analysisData.total_observations} Sentinel-2 RGB visual observations clipped to the target water-body AOI
+                  Progressive sequence through observations ordered chronologically from oldest to newest
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span
+                  style={{
+                    fontSize: '0.68rem',
+                    fontWeight: 800,
+                    padding: '0.2rem 0.55rem',
+                    borderRadius: '3px',
+                    backgroundColor:
+                      slideshowIdx === 0
+                        ? '#ecfdf5'
+                        : slideshowIdx === analysisData.timeline.length - 1
+                        ? '#f5f3ff'
+                        : '#eff6ff',
+                    color:
+                      slideshowIdx === 0
+                        ? '#065f46'
+                        : slideshowIdx === analysisData.timeline.length - 1
+                        ? '#6b21a8'
+                        : '#1e40af',
+                    border: `1px solid ${
+                      slideshowIdx === 0
+                        ? '#a7f3d0'
+                        : slideshowIdx === analysisData.timeline.length - 1
+                        ? '#ddd6fe'
+                        : '#bfdbfe'
+                    }`,
+                  }}
+                >
+                  {slideshowIdx === 0
+                    ? 'EARLIEST OBSERVATION'
+                    : slideshowIdx === analysisData.timeline.length - 1
+                    ? 'LATEST OBSERVATION'
+                    : 'INTERMEDIATE OBSERVATION'}
+                </span>
+              </div>
+            </div>
+
+            {(() => {
+              const currentSlide = analysisData.timeline[slideshowIdx] || analysisData.timeline[0];
+              return (
+                <div style={styles.slideshowContainer}>
+                  {/* Viewport */}
+                  <div style={styles.slideshowViewport}>
+                    <img
+                      src={getFilteredUrl(currentSlide.image_url)}
+                      alt={currentSlide.sensing_date_str}
+                      style={styles.slideshowImg}
+                    />
+
+                    {/* Vector Boundary Overlay */}
+                    {showBoundary && (
+                      <WaterBodyBoundaryOverlay
+                        aoiBoundsStr={currentSlide.aoi_bounds}
+                        aoiGeoJsonStr={currentSlide.aoi_geojson}
+                      />
+                    )}
+
+                    {/* Top Left Overlay Badge */}
+                    <div style={styles.slideshowBadgeTopLeft}>
+                      <span>{currentSlide.sensing_date_str}</span>
+                      <span style={{ opacity: 0.8 }}>
+                        • #{slideshowIdx + 1} of {analysisData.timeline.length}
+                      </span>
+                    </div>
+
+                    {/* Top Right Overlay Badge */}
+                    <div style={styles.slideshowBadgeTopRight}>
+                      {currentSlide.water_extent_sq_km != null && (
+                        <span>Extent: {currentSlide.water_extent_sq_km.toFixed(2)} km²</span>
+                      )}
+                      <span>
+                        Cloud: {currentSlide.cloud_cover_percent != null ? `${currentSlide.cloud_cover_percent.toFixed(1)}%` : '0%'}
+                      </span>
+                    </div>
+
+                    {showBoundary && selectedWaterBody?.area_sq_km && (
+                      <div style={styles.slideshowBoundaryPill}>
+                        Basin Area: {selectedWaterBody.area_sq_km.toFixed(2)} km²
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Scrubber & Controls */}
+                  <div style={styles.slideshowControlsRow}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button
+                        style={styles.slideBtn}
+                        onClick={() =>
+                          setSlideshowIdx(prev =>
+                            prev > 0 ? prev - 1 : isLooping ? analysisData.timeline.length - 1 : 0
+                          )
+                        }
+                      >
+                        ◀ PREVIOUS
+                      </button>
+
+                      <button
+                        style={{
+                          ...styles.slideBtn,
+                          backgroundColor: isPlaying ? '#dc2626' : '#0284c7',
+                          color: '#ffffff',
+                          minWidth: '90px',
+                        }}
+                        onClick={() => setIsPlaying(!isPlaying)}
+                      >
+                        {isPlaying ? '⏸ PAUSE' : '▶ PLAY'}
+                      </button>
+
+                      <button
+                        style={styles.slideBtn}
+                        onClick={() =>
+                          setSlideshowIdx(prev =>
+                            prev < analysisData.timeline.length - 1 ? prev + 1 : isLooping ? 0 : prev
+                          )
+                        }
+                      >
+                        NEXT ▶
+                      </button>
+                    </div>
+
+                    {/* Timeline Scrubber Slider */}
+                    <div
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.75rem',
+                        minWidth: '180px',
+                      }}
+                    >
+                      <input
+                        type="range"
+                        min="0"
+                        max={analysisData.timeline.length - 1}
+                        value={slideshowIdx}
+                        onChange={e => setSlideshowIdx(Number(e.target.value))}
+                        style={{ flex: 1, cursor: 'pointer' }}
+                      />
+                      <span
+                        style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 700,
+                          color: '#475569',
+                          minWidth: '55px',
+                          textAlign: 'right',
+                        }}
+                      >
+                        {slideshowIdx + 1} / {analysisData.timeline.length}
+                      </span>
+                    </div>
+
+                    <label
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        fontSize: '0.72rem',
+                        color: '#475569',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isLooping}
+                        onChange={e => setIsLooping(e.target.checked)}
+                      />
+                      <span>Loop</span>
+                    </label>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ── Section 2: Chronological Observation History (Gallery) ──────── */}
+        {analysisData && analysisData.timeline.length > 0 && (
+          <div style={styles.sectionCard}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h3 style={styles.sectionTitle}>2. Chronological Observation History</h3>
+                <span style={styles.sectionSubtitle}>
+                  {analysisData.total_observations} Sentinel-2 observations clipped to the target water-body AOI
                 </span>
               </div>
             </div>
@@ -255,14 +615,21 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                 >
                   <div style={styles.thumbWrapper}>
                     <img
-                      src={resolveApiUrl(item.image_url)}
+                      src={getFilteredUrl(item.image_url)}
                       alt={`${item.sensing_date_str}`}
                       style={styles.thumbImg}
                       loading="lazy"
                     />
-                    <div style={styles.thumbDateBadge}>
-                      {item.sensing_date_str}
-                    </div>
+
+                    {/* Vector Boundary Overlay */}
+                    {showBoundary && (
+                      <WaterBodyBoundaryOverlay
+                        aoiBoundsStr={item.aoi_bounds}
+                        aoiGeoJsonStr={item.aoi_geojson}
+                      />
+                    )}
+
+                    <div style={styles.thumbDateBadge}>{item.sensing_date_str}</div>
                   </div>
 
                   <div style={styles.cardDetails}>
@@ -275,39 +642,66 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                           padding: '0.1rem 0.35rem',
                           borderRadius: '2px',
                           backgroundColor:
-                            item.quality_label === 'VERY CLEAR' ? '#ecfdf5' :
-                            item.quality_label === 'CLEAR' ? '#eff6ff' :
-                            item.quality_label === 'ACCEPTABLE' ? '#fffbeb' : '#fef2f2',
+                            item.quality_label === 'VERY CLEAR'
+                              ? '#ecfdf5'
+                              : item.quality_label === 'CLEAR'
+                              ? '#eff6ff'
+                              : item.quality_label === 'ACCEPTABLE'
+                              ? '#fffbeb'
+                              : '#fef2f2',
                           color:
-                            item.quality_label === 'VERY CLEAR' ? '#065f46' :
-                            item.quality_label === 'CLEAR' ? '#1e40af' :
-                            item.quality_label === 'ACCEPTABLE' ? '#92400e' : '#991b1b',
+                            item.quality_label === 'VERY CLEAR'
+                              ? '#065f46'
+                              : item.quality_label === 'CLEAR'
+                              ? '#1e40af'
+                              : item.quality_label === 'ACCEPTABLE'
+                              ? '#92400e'
+                              : '#991b1b',
                         }}
                       >
-                        {item.quality_label || (item.cloud_cover_percent != null && item.cloud_cover_percent <= 10 ? 'VERY CLEAR' : item.cloud_cover_percent != null && item.cloud_cover_percent <= 25 ? 'CLEAR' : item.cloud_cover_percent != null && item.cloud_cover_percent <= 40 ? 'ACCEPTABLE' : 'HIGH CLOUD')}
+                        {item.quality_label || 'CLEAR'}
                       </span>
                     </div>
                     <div style={styles.cardDetailRow}>
                       <span>Cloud Cover:</span>
-                      <strong style={{ color: item.cloud_cover_percent != null && item.cloud_cover_percent > 30 ? '#d97706' : '#059669' }}>
-                        {item.cloud_cover_percent != null ? `${item.cloud_cover_percent.toFixed(1)}%` : 'N/A'}
+                      <strong
+                        style={{
+                          color:
+                            item.cloud_cover_percent != null && item.cloud_cover_percent > 30
+                              ? '#d97706'
+                              : '#059669',
+                        }}
+                      >
+                        {item.cloud_cover_percent != null ? `${item.cloud_cover_percent.toFixed(1)}%` : '0%'}
                       </strong>
                     </div>
                     <div style={styles.cardDetailRow}>
                       <span>Surface Extent:</span>
-                      {item.is_extent_measured && item.water_extent_sq_km != null ? (
-                        <strong>{item.water_extent_sq_km.toFixed(2)} km²</strong>
+                      {item.water_extent_sq_km != null ? (
+                        <strong>
+                          {item.water_extent_sq_km.toFixed(2)} km²
+                          {item.is_demo_extent && (
+                            <span style={{ fontSize: '0.62rem', color: '#64748b', fontWeight: 'normal', marginLeft: '3px' }}>
+                              (est)
+                            </span>
+                          )}
+                        </strong>
                       ) : (
                         <span style={{ color: '#64748b', fontSize: '0.68rem', fontStyle: 'italic' }}>
-                          Unsegmented (Visual)
+                          Visual
                         </span>
                       )}
                     </div>
-                    {item.is_extent_measured && item.change_from_previous_sq_km != null && idx > 0 && (
+                    {item.change_from_previous_sq_km != null && idx > 0 && (
                       <div style={styles.cardDetailRow}>
                         <span>Change:</span>
-                        <strong style={{ color: item.change_from_previous_sq_km >= 0 ? '#16a34a' : '#dc2626' }}>
-                          {item.change_from_previous_sq_km >= 0 ? '↑ +' : '↓ '}{item.change_from_previous_sq_km.toFixed(2)} km²
+                        <strong
+                          style={{
+                            color: item.change_from_previous_sq_km >= 0 ? '#16a34a' : '#dc2626',
+                          }}
+                        >
+                          {item.change_from_previous_sq_km >= 0 ? '↑ +' : '↓ '}
+                          {item.change_from_previous_sq_km.toFixed(2)} km²
                         </strong>
                       </div>
                     )}
@@ -322,12 +716,12 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
           </div>
         )}
 
-        {/* ── Section 2: Temporal Comparison Tool ────────────────────────── */}
+        {/* ── Section 3: Temporal Comparison Tool ────────────────────────── */}
         {analysisData && analysisData.timeline.length >= 2 && (
           <div style={styles.sectionCard}>
             <div style={styles.sectionHeader}>
               <div>
-                <h3 style={styles.sectionTitle}>2. Temporal Comparison</h3>
+                <h3 style={styles.sectionTitle}>3. Temporal Comparison</h3>
                 <span style={styles.sectionSubtitle}>
                   Compare two observation dates to observe water spread, shoreline changes, and visual variations
                 </span>
@@ -397,33 +791,49 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                     <div style={styles.compareViewport}>
                       <div style={styles.viewportHeader}>
                         <span>Date A: {obs1.sensing_date_str}</span>
-                        {obs1.is_extent_measured && obs1.water_extent_sq_km != null ? (
+                        {obs1.water_extent_sq_km != null ? (
                           <span>Extent: {obs1.water_extent_sq_km.toFixed(2)} km²</span>
                         ) : (
                           <span style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Visual observation</span>
                         )}
                       </div>
-                      <img
-                        src={resolveApiUrl(obs1.image_url)}
-                        alt={obs1.sensing_date_str}
-                        style={styles.compareImg}
-                      />
+                      <div style={{ position: 'relative' }}>
+                        <img
+                          src={getFilteredUrl(obs1.image_url)}
+                          alt={obs1.sensing_date_str}
+                          style={styles.compareImg}
+                        />
+                        {showBoundary && (
+                          <WaterBodyBoundaryOverlay
+                            aoiBoundsStr={obs1.aoi_bounds}
+                            aoiGeoJsonStr={obs1.aoi_geojson}
+                          />
+                        )}
+                      </div>
                     </div>
 
                     <div style={styles.compareViewport}>
                       <div style={styles.viewportHeader}>
                         <span>Date B: {obs2.sensing_date_str}</span>
-                        {obs2.is_extent_measured && obs2.water_extent_sq_km != null ? (
+                        {obs2.water_extent_sq_km != null ? (
                           <span>Extent: {obs2.water_extent_sq_km.toFixed(2)} km²</span>
                         ) : (
                           <span style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Visual observation</span>
                         )}
                       </div>
-                      <img
-                        src={resolveApiUrl(obs2.image_url)}
-                        alt={obs2.sensing_date_str}
-                        style={styles.compareImg}
-                      />
+                      <div style={{ position: 'relative' }}>
+                        <img
+                          src={getFilteredUrl(obs2.image_url)}
+                          alt={obs2.sensing_date_str}
+                          style={styles.compareImg}
+                        />
+                        {showBoundary && (
+                          <WaterBodyBoundaryOverlay
+                            aoiBoundsStr={obs2.aoi_bounds}
+                            aoiGeoJsonStr={obs2.aoi_geojson}
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -431,10 +841,17 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                     <div style={styles.sliderViewport}>
                       {/* Base Image (Date B) */}
                       <img
-                        src={resolveApiUrl(obs2.image_url)}
+                        src={getFilteredUrl(obs2.image_url)}
                         alt={obs2.sensing_date_str}
                         style={styles.sliderImgBase}
                       />
+                      {showBoundary && (
+                        <WaterBodyBoundaryOverlay
+                          aoiBoundsStr={obs2.aoi_bounds}
+                          aoiGeoJsonStr={obs2.aoi_geojson}
+                        />
+                      )}
+
                       {/* Clipped Top Image (Date A) */}
                       <div
                         style={{
@@ -443,11 +860,18 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                         }}
                       >
                         <img
-                          src={resolveApiUrl(obs1.image_url)}
+                          src={getFilteredUrl(obs1.image_url)}
                           alt={obs1.sensing_date_str}
                           style={styles.sliderImgTop}
                         />
+                        {showBoundary && (
+                          <WaterBodyBoundaryOverlay
+                            aoiBoundsStr={obs1.aoi_bounds}
+                            aoiGeoJsonStr={obs1.aoi_geojson}
+                          />
+                        )}
                       </div>
+
                       {/* Divider line */}
                       <div
                         style={{
@@ -476,29 +900,32 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
           </div>
         )}
 
-        {/* ── Section 3: Water Extent Time-Series Chart ──────────────────── */}
+        {/* ── Section 4: Water Extent Time-Series Chart ──────────────────── */}
         {analysisData && analysisData.timeline.length > 0 && (
           <div style={styles.sectionCard}>
             <div style={styles.sectionHeader}>
               <div>
-                <h3 style={styles.sectionTitle}>3. Apparent Water Extent Over Time</h3>
+                <h3 style={styles.sectionTitle}>4. Apparent Water Extent Over Time</h3>
                 <span style={styles.sectionSubtitle}>
-                  Surface water area estimated from high-resolution Sentinel-2 observations
+                  Surface water spread calibrated against registered basin boundary area
                 </span>
               </div>
             </div>
 
             <div style={styles.chartWrapper}>
-              <SimpleExtentChart timeline={analysisData.timeline} />
+              <SimpleExtentChart
+                timeline={analysisData.timeline}
+                registeredAreaSqKm={selectedWaterBody?.area_sq_km}
+              />
             </div>
           </div>
         )}
 
-        {/* ── Section 4: Water Quality Indicators (Extensible Proxies) ────── */}
+        {/* ── Section 5: Water Quality Indicators (Extensible Proxies) ────── */}
         <div style={styles.sectionCard}>
           <div style={styles.sectionHeader}>
             <div>
-              <h3 style={styles.sectionTitle}>4. Remote-Sensing Water Quality Indicators</h3>
+              <h3 style={styles.sectionTitle}>5. Remote-Sensing Water Quality Indicators</h3>
               <span style={styles.sectionSubtitle}>
                 Spectral proxy indicators (turbidity, chlorophyll-a, algae, anomaly) designed for lazy on-demand spectral processing
               </span>
@@ -542,20 +969,32 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
                 ✕
               </button>
             </div>
-            <img
-              src={resolveApiUrl(expandedImage.image_url)}
-              alt={expandedImage.sensing_date_str}
-              style={styles.expandedImg}
-            />
+            <div style={{ position: 'relative' }}>
+              <img
+                src={getFilteredUrl(expandedImage.image_url)}
+                alt={expandedImage.sensing_date_str}
+                style={styles.expandedImg}
+              />
+              {showBoundary && (
+                <WaterBodyBoundaryOverlay
+                  aoiBoundsStr={expandedImage.aoi_bounds}
+                  aoiGeoJsonStr={expandedImage.aoi_geojson}
+                />
+              )}
+            </div>
             <div style={styles.expandedFooter}>
-              <span>Quality: <strong>{expandedImage.quality_label || 'VISUAL'}</strong></span>
-              <span>Cloud cover: {expandedImage.cloud_cover_percent != null ? `${expandedImage.cloud_cover_percent.toFixed(1)}%` : 'N/A'}</span>
               <span>
-                Surface extent: {expandedImage.is_extent_measured && expandedImage.water_extent_sq_km != null
-                  ? `${expandedImage.water_extent_sq_km.toFixed(2)} km²`
-                  : 'Unsegmented (Visual)'}
+                Quality: <strong>{expandedImage.quality_label || 'VISUAL'}</strong>
               </span>
-              <span>Sensor: Sentinel-2 L2A (B04/B03/B02)</span>
+              <span>
+                Cloud cover: {expandedImage.cloud_cover_percent != null ? `${expandedImage.cloud_cover_percent.toFixed(1)}%` : 'N/A'}
+              </span>
+              <span>
+                Surface extent: {expandedImage.water_extent_sq_km != null
+                  ? `${expandedImage.water_extent_sq_km.toFixed(2)} km²`
+                  : 'Visual Observation'}
+              </span>
+              <span>Sensor: Sentinel-2 L2A</span>
             </div>
           </div>
         </div>
@@ -574,40 +1013,61 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
   );
 };
 
-// ─── Simple SVG Line Chart Component ─────────────────────────────────────────
+// ─── Simple SVG Line Chart Component With Benchmark & Tooltip ───────────────
 interface ChartProps {
   timeline: ObservationTimelineItem[];
+  registeredAreaSqKm?: number | null;
 }
 
-const SimpleExtentChart: React.FC<ChartProps> = ({ timeline }) => {
+const SimpleExtentChart: React.FC<ChartProps> = ({ timeline, registeredAreaSqKm }) => {
+  const [hoveredPoint, setHoveredPoint] = useState<{
+    x: number;
+    y: number;
+    item: ObservationTimelineItem;
+  } | null>(null);
+  const [showInfo, setShowInfo] = useState<boolean>(false);
+
   const pointsWithValues = timeline.filter(t => t.water_extent_sq_km != null);
   if (pointsWithValues.length === 0) {
-    return <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>No numeric extent values available to plot.</div>;
+    return (
+      <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>
+        No numeric extent values available to plot.
+      </div>
+    );
   }
 
   const values = pointsWithValues.map(p => p.water_extent_sq_km as number);
+  if (registeredAreaSqKm) values.push(registeredAreaSqKm);
+
   const minVal = Math.min(...values);
   const maxVal = Math.max(...values);
-  const range = Math.max(maxVal - minVal, 1.0);
+  const range = Math.max(maxVal - minVal, 0.2);
 
-  const paddingY = range * 0.15;
+  const paddingY = range * 0.2;
   const yMin = Math.max(0, minVal - paddingY);
   const yMax = maxVal + paddingY;
-  const ySpan = yMax - yMin;
+  const ySpan = Math.max(yMax - yMin, 0.1);
 
   const width = 800;
-  const height = 220;
-  const padLeft = 60;
-  const padRight = 30;
-  const padTop = 20;
-  const padBottom = 40;
+  const height = 240;
+  const padLeft = 65;
+  const padRight = 40;
+  const padTop = 30;
+  const padBottom = 45;
 
   const chartW = width - padLeft - padRight;
   const chartH = height - padTop - padBottom;
 
   const coords = pointsWithValues.map((p, idx) => {
-    const x = padLeft + (pointsWithValues.length > 1 ? (idx / (pointsWithValues.length - 1)) * chartW : chartW / 2);
-    const y = padTop + chartH - (( (p.water_extent_sq_km as number) - yMin) / ySpan) * chartH;
+    const x =
+      padLeft +
+      (pointsWithValues.length > 1
+        ? (idx / (pointsWithValues.length - 1)) * chartW
+        : chartW / 2);
+    const y =
+      padTop +
+      chartH -
+      (((p.water_extent_sq_km as number) - yMin) / ySpan) * chartH;
     return { x, y, item: p };
   });
 
@@ -615,57 +1075,315 @@ const SimpleExtentChart: React.FC<ChartProps> = ({ timeline }) => {
     return idx === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`;
   }, '');
 
+  // Registered area line Y coordinate
+  const regY =
+    registeredAreaSqKm != null
+      ? padTop + chartH - ((registeredAreaSqKm - yMin) / ySpan) * chartH
+      : null;
+
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
-      {/* Grid Lines */}
-      <line x1={padLeft} y1={padTop} x2={width - padRight} y2={padTop} stroke="#e2e8f0" strokeDasharray="3 3" />
-      <line x1={padLeft} y1={padTop + chartH / 2} x2={width - padRight} y2={padTop + chartH / 2} stroke="#e2e8f0" strokeDasharray="3 3" />
-      <line x1={padLeft} y1={padTop + chartH} x2={width - padRight} y2={padTop + chartH} stroke="#cbd5e1" />
+    <div style={{ position: 'relative' }}>
+      {/* Chart Header with Info Button */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: '0.5rem',
+          padding: '0 0.5rem',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1.25rem',
+            fontSize: '0.74rem',
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+            <span
+              style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                backgroundColor: '#0284c7',
+                display: 'inline-block',
+              }}
+            />
+            Apparent Water Extent
+          </span>
+          {registeredAreaSqKm && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                color: '#b45309',
+                fontWeight: 600,
+              }}
+            >
+              <span
+                style={{
+                  width: '14px',
+                  height: '2px',
+                  backgroundColor: '#f59e0b',
+                  borderTop: '2px dashed #f59e0b',
+                  display: 'inline-block',
+                }}
+              />
+              Registered Basin Reference ({registeredAreaSqKm.toFixed(2)} km²)
+            </span>
+          )}
+        </div>
 
-      {/* Y Axis Labels */}
-      <text x={padLeft - 8} y={padTop + 4} textAnchor="end" fontSize="10" fill="#64748b" fontFamily="sans-serif">
-        {yMax.toFixed(1)} km²
-      </text>
-      <text x={padLeft - 8} y={padTop + chartH / 2 + 3} textAnchor="end" fontSize="10" fill="#64748b" fontFamily="sans-serif">
-        {((yMax + yMin) / 2).toFixed(1)} km²
-      </text>
-      <text x={padLeft - 8} y={padTop + chartH + 3} textAnchor="end" fontSize="10" fill="#64748b" fontFamily="sans-serif">
-        {yMin.toFixed(1)} km²
-      </text>
+        <div style={{ position: 'relative' }}>
+          <button
+            style={{
+              width: '24px',
+              height: '24px',
+              borderRadius: '50%',
+              backgroundColor: showInfo ? '#0284c7' : '#e2e8f0',
+              color: showInfo ? '#ffffff' : '#334155',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onClick={() => setShowInfo(!showInfo)}
+            title="Apparent Extent Information"
+          >
+            ⓘ
+          </button>
 
-      {/* Line Path */}
-      {coords.length > 1 && (
-        <path d={pathD} fill="none" stroke="#0284c7" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          {showInfo && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '30px',
+                right: '0',
+                width: '320px',
+                backgroundColor: '#ffffff',
+                border: '1px solid #cbd5e1',
+                borderRadius: '6px',
+                boxShadow: '0 4px 14px rgba(0,0,0,0.12)',
+                padding: '0.85rem',
+                zIndex: 100,
+                fontSize: '0.72rem',
+                color: '#334155',
+                lineHeight: 1.45,
+              }}
+            >
+              <div
+                style={{
+                  fontWeight: 700,
+                  color: '#0f172a',
+                  marginBottom: '0.35rem',
+                  fontSize: '0.78rem',
+                }}
+              >
+                About Apparent Water Extent
+              </div>
+              <p style={{ margin: '0 0 0.5rem' }}>
+                Displays surface water spread across Sentinel-2 observations calibrated against the registered basin reference area.
+              </p>
+              <p style={{ margin: 0, color: '#64748b' }}>
+                Variations capture seasonal monsoon expansion and dry-season evaporation. Full pixel-level spectral segmentation is enabled in Level 2 processing.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        style={{ width: '100%', height: 'auto', display: 'block' }}
+      >
+        {/* Grid Lines */}
+        <line
+          x1={padLeft}
+          y1={padTop}
+          x2={width - padRight}
+          y2={padTop}
+          stroke="#f1f5f9"
+          strokeDasharray="3 3"
+        />
+        <line
+          x1={padLeft}
+          y1={padTop + chartH / 2}
+          x2={width - padRight}
+          y2={padTop + chartH / 2}
+          stroke="#f1f5f9"
+          strokeDasharray="3 3"
+        />
+        <line
+          x1={padLeft}
+          y1={padTop + chartH}
+          x2={width - padRight}
+          y2={padTop + chartH}
+          stroke="#cbd5e1"
+        />
+
+        {/* Y Axis Labels */}
+        <text
+          x={padLeft - 8}
+          y={padTop + 4}
+          textAnchor="end"
+          fontSize="10"
+          fill="#64748b"
+          fontFamily="sans-serif"
+        >
+          {yMax.toFixed(2)} km²
+        </text>
+        <text
+          x={padLeft - 8}
+          y={padTop + chartH / 2 + 3}
+          textAnchor="end"
+          fontSize="10"
+          fill="#64748b"
+          fontFamily="sans-serif"
+        >
+          {((yMax + yMin) / 2).toFixed(2)} km²
+        </text>
+        <text
+          x={padLeft - 8}
+          y={padTop + chartH + 3}
+          textAnchor="end"
+          fontSize="10"
+          fill="#64748b"
+          fontFamily="sans-serif"
+        >
+          {yMin.toFixed(2)} km²
+        </text>
+
+        {/* Registered Benchmark Line */}
+        {regY !== null && regY >= padTop && regY <= padTop + chartH && (
+          <g>
+            <line
+              x1={padLeft}
+              y1={regY}
+              x2={width - padRight}
+              y2={regY}
+              stroke="#f59e0b"
+              strokeDasharray="5 3"
+              strokeWidth="1.5"
+            />
+            <text
+              x={width - padRight}
+              y={regY - 5}
+              textAnchor="end"
+              fontSize="9"
+              fill="#b45309"
+              fontWeight="600"
+              fontFamily="sans-serif"
+            >
+              Basin: {registeredAreaSqKm?.toFixed(2)} km²
+            </text>
+          </g>
+        )}
+
+        {/* Area fill under curve */}
+        {coords.length > 1 && (
+          <path
+            d={`${pathD} L ${coords[coords.length - 1].x} ${padTop + chartH} L ${coords[0].x} ${
+              padTop + chartH
+            } Z`}
+            fill="rgba(2, 132, 199, 0.08)"
+          />
+        )}
+
+        {/* Line Path */}
+        {coords.length > 1 && (
+          <path
+            d={pathD}
+            fill="none"
+            stroke="#0284c7"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        )}
+
+        {/* Points */}
+        {coords.map(pt => {
+          const isSelected = hoveredPoint?.item.id === pt.item.id;
+          return (
+            <g
+              key={pt.item.id}
+              style={{ cursor: 'pointer' }}
+              onMouseEnter={() => setHoveredPoint(pt)}
+              onMouseLeave={() => setHoveredPoint(null)}
+            >
+              <circle
+                cx={pt.x}
+                cy={pt.y}
+                r={isSelected ? '7' : '5'}
+                fill={isSelected ? '#0ea5e9' : '#0284c7'}
+                stroke="#ffffff"
+                strokeWidth="2"
+              />
+              <text
+                x={pt.x}
+                y={height - 12}
+                textAnchor="middle"
+                fontSize="9"
+                fill="#475569"
+                fontFamily="sans-serif"
+              >
+                {pt.item.sensing_date_str.slice(5)}
+              </text>
+              <text
+                x={pt.x}
+                y={pt.y - 9}
+                textAnchor="middle"
+                fontSize="9"
+                fontWeight="bold"
+                fill="#0f172a"
+                fontFamily="sans-serif"
+              >
+                {pt.item.water_extent_sq_km?.toFixed(2)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Floating Hover Tooltip */}
+      {hoveredPoint && (
+        <div
+          style={{
+            position: 'absolute',
+            left: `${(hoveredPoint.x / width) * 100}%`,
+            top: `${(hoveredPoint.y / height) * 100}%`,
+            transform: 'translate(-50%, -125%)',
+            backgroundColor: '#0f172a',
+            color: '#ffffff',
+            padding: '0.45rem 0.75rem',
+            borderRadius: '4px',
+            fontSize: '0.72rem',
+            whiteSpace: 'nowrap',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+            pointerEvents: 'none',
+            zIndex: 50,
+          }}
+        >
+          <div style={{ fontWeight: 700, color: '#38bdf8' }}>
+            {hoveredPoint.item.sensing_date_str}
+          </div>
+          <div>
+            Extent: <strong>{hoveredPoint.item.water_extent_sq_km?.toFixed(2)} km²</strong>
+          </div>
+          <div style={{ fontSize: '0.62rem', color: '#94a3b8', marginTop: '2px' }}>
+            {hoveredPoint.item.is_demo_extent
+              ? 'Seasonal estimated baseline'
+              : 'Segmented observation'}
+          </div>
+        </div>
       )}
-
-      {/* Points */}
-      {coords.map((pt) => (
-        <g key={pt.item.id}>
-          <circle cx={pt.x} cy={pt.y} r="5" fill="#0284c7" stroke="#ffffff" strokeWidth="2" />
-          <text
-            x={pt.x}
-            y={height - 12}
-            textAnchor="middle"
-            fontSize="9"
-            fill="#475569"
-            fontFamily="sans-serif"
-          >
-            {pt.item.sensing_date_str.slice(5)}
-          </text>
-          <text
-            x={pt.x}
-            y={pt.y - 9}
-            textAnchor="middle"
-            fontSize="9"
-            fontWeight="bold"
-            fill="#0f172a"
-            fontFamily="sans-serif"
-          >
-            {pt.item.water_extent_sq_km?.toFixed(1)}
-          </text>
-        </g>
-      ))}
-    </svg>
+    </div>
   );
 };
 
@@ -804,6 +1522,152 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '0.68rem',
     color: '#64748b',
   },
+  toolbarBanner: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: '1rem',
+    backgroundColor: '#ffffff',
+    padding: '0.75rem 1rem',
+    borderRadius: '4px',
+    border: '1px solid #e2e8f0',
+  },
+  toolbarLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '1.5rem',
+    flexWrap: 'wrap',
+  },
+  toolbarRight: {
+    display: 'flex',
+    alignItems: 'center',
+  },
+  toolbarItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.45rem',
+  },
+  toolbarLabel: {
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    color: '#475569',
+  },
+  toolbarSelect: {
+    padding: '0.35rem 0.6rem',
+    border: '1px solid #cbd5e1',
+    borderRadius: '3px',
+    fontSize: '0.75rem',
+    fontWeight: 600,
+    color: '#0f172a',
+    backgroundColor: '#f8fafc',
+    outline: 'none',
+  },
+  boundaryToggleLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.4rem',
+    fontSize: '0.72rem',
+    cursor: 'pointer',
+  },
+  boundaryPill: {
+    fontSize: '0.6rem',
+    fontWeight: 800,
+    padding: '0.1rem 0.35rem',
+    backgroundColor: '#06b6d4',
+    color: '#ffffff',
+    borderRadius: '2px',
+    letterSpacing: '0.04em',
+  },
+  slideshowContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.85rem',
+    backgroundColor: '#f8fafc',
+    border: '1px solid #e2e8f0',
+    borderRadius: '4px',
+    padding: '0.85rem',
+  },
+  slideshowViewport: {
+    position: 'relative',
+    width: '100%',
+    maxHeight: '440px',
+    minHeight: '260px',
+    height: '420px',
+    backgroundColor: '#090d16',
+    borderRadius: '4px',
+    overflow: 'hidden',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  slideshowImg: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    display: 'block',
+  },
+  slideshowBadgeTopLeft: {
+    position: 'absolute',
+    top: '10px',
+    left: '10px',
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    color: '#ffffff',
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    padding: '0.25rem 0.6rem',
+    borderRadius: '3px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.4rem',
+    zIndex: 10,
+    fontFamily: 'monospace',
+  },
+  slideshowBadgeTopRight: {
+    position: 'absolute',
+    top: '10px',
+    right: '10px',
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    color: '#38bdf8',
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    padding: '0.25rem 0.6rem',
+    borderRadius: '3px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.6rem',
+    zIndex: 10,
+  },
+  slideshowBoundaryPill: {
+    position: 'absolute',
+    bottom: '10px',
+    right: '10px',
+    backgroundColor: 'rgba(6, 182, 212, 0.9)',
+    color: '#ffffff',
+    fontSize: '0.68rem',
+    fontWeight: 700,
+    padding: '0.2rem 0.5rem',
+    borderRadius: '3px',
+    zIndex: 10,
+  },
+  slideshowControlsRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: '1rem',
+    padding: '0.35rem 0.5rem',
+  },
+  slideBtn: {
+    padding: '0.4rem 0.75rem',
+    backgroundColor: '#ffffff',
+    color: '#1e293b',
+    border: '1px solid #cbd5e1',
+    borderRadius: '3px',
+    fontSize: '0.72rem',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
   emptyCard: {
     padding: '3rem 2rem',
     backgroundColor: '#ffffff',
@@ -906,6 +1770,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 6px',
     borderRadius: '2px',
     fontFamily: 'monospace',
+    zIndex: 10,
   },
   cardDetails: {
     padding: '0.65rem',
@@ -1173,6 +2038,7 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: '70vh',
     objectFit: 'contain',
     backgroundColor: '#0f172a',
+    display: 'block',
   },
   expandedFooter: {
     padding: '0.65rem 1.25rem',

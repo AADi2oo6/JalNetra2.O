@@ -501,6 +501,60 @@ def test_analysis_quality_labels_and_unmeasured_extent(client: TestClient, db_se
     item = data["timeline"][0]
     assert item["quality_label"] == "VERY CLEAR"
     assert item["cloud_cover_percent"] == 7.5
-    assert item["water_extent_sq_km"] is None
+    assert item["water_extent_sq_km"] is not None
+    assert item["is_demo_extent"] is True
     assert item["is_extent_measured"] is False
     assert item["registered_area_sq_km"] == wb.area_sq_km
+
+
+def test_observation_image_filters_and_fallback(client: TestClient, db_session: Session, tmp_path):
+    wb = _create_test_water_body(db_session, "Filter Test Lake")
+
+    # Create dummy observation directory and rgb.jpg
+    obs_dir = tmp_path / "water_bodies" / wb.id / "observations" / "S2_FILTER_TEST"
+    obs_dir.mkdir(parents=True, exist_ok=True)
+    rgb_file = obs_dir / "rgb.jpg"
+
+    from PIL import Image
+    im = Image.new("RGB", (100, 100), color=(50, 120, 200))
+    im.save(rgb_file, "JPEG")
+
+    obs = SatelliteObservation(
+        water_body_id=wb.id,
+        satellite="Sentinel-2",
+        provider="earth_search",
+        collection="sentinel-2-c1-l2a",
+        external_scene_id="S2_FILTER_TEST",
+        sensing_date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        cloud_cover_percent=2.0,
+        local_visual_path=str(rgb_file.relative_to(tmp_path)).replace("\\", "/"),
+        status="ready",
+    )
+    db_session.add(obs)
+    db_session.commit()
+
+    # Monkeypatch storage data_dir
+    with patch("app.services.satellite.observation_service.settings.DATA_DIR", tmp_path):
+        # 1. Natural filter
+        res_nat = client.get(f"/api/v1/water-bodies/{wb.id}/observations/{obs.id}/image?filter=natural")
+        assert res_nat.status_code == 200
+        assert res_nat.headers["content-type"] == "image/jpeg"
+
+        # 2. Water emphasis filter
+        res_water = client.get(f"/api/v1/water-bodies/{wb.id}/observations/{obs.id}/image?filter=water_emphasis")
+        assert res_water.status_code == 200
+        assert res_water.headers["content-type"] == "image/jpeg"
+        assert (obs_dir / "rgb_water_emphasis.jpg").exists()
+
+        # 3. Contrast filter
+        res_contrast = client.get(f"/api/v1/water-bodies/{wb.id}/observations/{obs.id}/image?filter=contrast")
+        assert res_contrast.status_code == 200
+        assert res_contrast.headers["content-type"] == "image/jpeg"
+        assert (obs_dir / "rgb_contrast.jpg").exists()
+
+        # 4. NIR filter (unavailable band fallback -> returns informative SVG)
+        res_nir = client.get(f"/api/v1/water-bodies/{wb.id}/observations/{obs.id}/image?filter=nir")
+        assert res_nir.status_code == 200
+        assert "image/svg+xml" in res_nir.headers["content-type"]
+        assert b"Near-Infrared (B08) Not Acquired" in res_nir.content
+

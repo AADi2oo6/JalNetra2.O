@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.database import get_db, SessionLocal
@@ -205,21 +205,28 @@ def list_observations(
 
 @router.get(
     "/{water_body_id}/observations/{observation_id}/image",
-    summary="Serve the visual RGB JPEG image of an observation",
+    summary="Serve the visual RGB JPEG or filtered image of an observation",
 )
 def get_observation_image(
     water_body_id: str,
     observation_id: str,
+    filter: str = Query("natural", description="Visual filter: natural, water_emphasis, contrast, false_color, nir, swir"),
     service: SatelliteObservationService = Depends(get_observation_service),
 ):
     try:
-        file_path = service.get_observation_file_path(
-            water_body_id=water_body_id, observation_id=observation_id
+        file_path, media_type, raw_bytes = service.get_filtered_observation_image(
+            water_body_id=water_body_id, observation_id=observation_id, filter_type=filter
         )
+        if raw_bytes is not None:
+            return Response(
+                content=raw_bytes,
+                media_type=media_type,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
         return FileResponse(
             path=str(file_path),
-            media_type="image/jpeg",
-            filename=f"{observation_id}_rgb.jpg",
+            media_type=media_type,
+            filename=f"{observation_id}_{filter}.jpg",
             headers={"Cache-Control": "public, max-age=86400"},
         )
     except ObservationServiceError as exc:

@@ -157,8 +157,11 @@ class ObservationTimelineItem(BaseModel):
     image_height: Optional[int] = None
     water_extent_sq_km: Optional[float] = None
     is_extent_measured: bool = False
+    is_demo_extent: bool = False
     registered_area_sq_km: Optional[float] = None
     change_from_previous_sq_km: Optional[float] = None
+    aoi_bounds: Optional[str] = None
+    aoi_geojson: Optional[str] = None
     status: str = "ready"
 
 

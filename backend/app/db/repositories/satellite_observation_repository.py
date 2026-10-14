@@ -48,6 +48,12 @@ class SatelliteObservationRepository:
         self.db.refresh(obs)
         return obs
 
+    def update(self, obs: SatelliteObservation) -> SatelliteObservation:
+        self.db.add(obs)
+        self.db.commit()
+        self.db.refresh(obs)
+        return obs
+
     def delete(self, observation_id: str) -> bool:
         obs = self.get_by_id(observation_id)
         if not obs:
