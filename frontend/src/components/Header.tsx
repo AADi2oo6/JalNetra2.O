@@ -17,6 +17,17 @@ export const Header: React.FC<HeaderProps> = ({ status, serviceInfo }) => {
       </div>
 
       <div style={styles.statusBox}>
+        <a
+          href="https://t.me/jalNetra_Helperbot"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open JalNetra Telegram Assistant"
+          style={styles.telegramLink}
+        >
+          <span style={{ fontSize: '0.85rem' }}>💬</span>
+          <span>Telegram Assistant</span>
+        </a>
+
         <span style={styles.statusLabel}>Backend:</span>
         <span
           style={{
@@ -124,5 +135,19 @@ const styles: Record<string, React.CSSProperties> = {
     width: '6px',
     height: '6px',
     display: 'inline-block',
+  },
+  telegramLink: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '0.4rem',
+    padding: '0.25rem 0.65rem',
+    backgroundColor: '#f0f9ff',
+    border: '1px solid #7dd3fc',
+    borderRadius: '3px',
+    color: '#0369a1',
+    fontSize: '0.75rem',
+    fontWeight: 700,
+    textDecoration: 'none',
+    transition: 'all 0.15s ease',
   },
 };

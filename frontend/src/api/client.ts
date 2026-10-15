@@ -1132,4 +1132,56 @@ export async function calculateTimeSeriesSpectral(
   return handleResponse<TimeSeriesSpectralResponse>(response);
 }
 
+export interface AIStatusResponse {
+  enabled: boolean;
+  configured: boolean;
+  model: string;
+  provider: string;
+}
 
+export interface AIAnalysisRequest {
+  water_body_id?: string | null;
+  observation_id?: string | null;
+  question: string;
+}
+
+export interface AIAnalysisResponse {
+  answer: string;
+  water_body_name?: string | null;
+  observation_date?: string | null;
+  model: string;
+  disclaimer: string;
+}
+
+export interface TelegramStatusResponse {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  bot_username?: string | null;
+}
+
+export async function getAIStatus(): Promise<AIStatusResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/ai/status`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<AIStatusResponse>(response);
+}
+
+export async function askAIAnalysis(request: AIAnalysisRequest): Promise<AIAnalysisResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/ai/analyze`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  return handleResponse<AIAnalysisResponse>(response);
+}
+
+export async function getTelegramStatus(): Promise<TelegramStatusResponse> {
+  const response = await fetch(`${BASE_URL}/api/v1/telegram/status`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<TelegramStatusResponse>(response);
+}

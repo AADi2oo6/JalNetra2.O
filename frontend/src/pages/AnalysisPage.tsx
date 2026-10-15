@@ -15,6 +15,10 @@ import {
   SpectralAnalysisResult,
   BandAvailabilityInfo,
   TimeSeriesSpectralResponse,
+  getAIStatus,
+  askAIAnalysis,
+  AIStatusResponse,
+  AIAnalysisResponse,
 } from '../api/client';
 import { FetchVisualDataModal } from '../components/FetchVisualDataModal';
 
@@ -352,6 +356,57 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
   const [isComputingTimeSeries, setIsComputingTimeSeries] = useState<boolean>(false);
   const [timeSeriesResult, setTimeSeriesResult] = useState<TimeSeriesSpectralResponse | null>(null);
   const [timeSeriesProgress, setTimeSeriesProgress] = useState<number>(0);
+
+  // AI Assistant State
+  const [aiStatus, setAiStatus] = useState<AIStatusResponse | null>(null);
+  const [aiQuestion, setAiQuestion] = useState<string>('');
+  const [aiResponse, setAiResponse] = useState<AIAnalysisResponse | null>(null);
+  const [isAiLoading, setIsAiLoading] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  // Fetch AI status on mount
+  useEffect(() => {
+    let active = true;
+    getAIStatus()
+      .then(st => {
+        if (active) setAiStatus(st);
+      })
+      .catch(() => {
+        if (active) setAiStatus({ enabled: false, configured: false, model: 'gpt-4o-mini', provider: 'openai' });
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Isolate AI response per water body (Section 37)
+  useEffect(() => {
+    setAiResponse(null);
+    setAiError(null);
+    setAiQuestion('');
+  }, [selectedWaterBodyId]);
+
+  const handleAskAi = async (questionText: string) => {
+    if (!questionText.trim() || !selectedWaterBodyId) return;
+    setIsAiLoading(true);
+    setAiError(null);
+    try {
+      const res = await askAIAnalysis({
+        water_body_id: selectedWaterBodyId,
+        observation_id: spectralObsId || undefined,
+        question: questionText.trim(),
+      });
+      setAiResponse(res);
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'AI service is currently unavailable. Your satellite analysis data is still available.';
+      setAiError(msg);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
 
   // Load registered water bodies
   useEffect(() => {
@@ -1716,6 +1771,259 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* ── 6. AI Water Analysis Assistant ────────────────────────────── */}
+      <div style={styles.sectionCard}>
+        <div style={styles.sectionHeader}>
+          <div>
+            <h3 style={styles.sectionTitle}>6. AI Water Analysis Assistant</h3>
+            <span style={styles.sectionSubtitle}>
+              Ask AI to explain the current satellite observations and analysis results.
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {aiStatus && (
+              <span
+                style={{
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '3px',
+                  backgroundColor: aiStatus.configured ? '#ecfdf5' : '#fef2f2',
+                  color: aiStatus.configured ? '#059669' : '#dc2626',
+                  border: `1px solid ${aiStatus.configured ? '#a7f3d0' : '#fecaca'}`,
+                }}
+              >
+                {aiStatus.configured ? `AI READY (${aiStatus.model})` : 'AI NOT CONFIGURED'}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+          {/* Target info & Telegram link */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '0.5rem',
+              padding: '0.55rem 0.85rem',
+              backgroundColor: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              borderRadius: '3px',
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', color: '#334155' }}>
+              <strong>Selected:</strong> {selectedWaterBody?.name || 'No water body selected'}
+              {selectedSpectralObs && (
+                <span style={{ color: '#0284c7', marginLeft: '0.4rem' }}>
+                  • Observation: {selectedSpectralObs.sensing_date_str}
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.72rem', color: '#64748b' }}>
+              <span>Need alerts or remote monitoring later?</span>
+              <a
+                href="https://t.me/jalNetra_Helperbot"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  color: '#0284c7',
+                  fontWeight: 700,
+                  textDecoration: 'none',
+                  backgroundColor: '#e0f2fe',
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '3px',
+                  border: '1px solid #bae6fd',
+                }}
+              >
+                💬 OPEN TELEGRAM →
+              </a>
+            </div>
+          </div>
+
+          {/* Quick Actions */}
+          <div>
+            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: '#475569', marginBottom: '0.4rem', letterSpacing: '0.04em' }}>
+              QUICK ACTIONS
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <button
+                style={{
+                  ...styles.quickNavBtn,
+                  backgroundColor: '#f0fdf4',
+                  borderColor: '#86efac',
+                  color: '#166534',
+                  fontWeight: 700,
+                  padding: '0.35rem 0.65rem',
+                  fontSize: '0.72rem',
+                  cursor: (isAiLoading || !selectedWaterBodyId) ? 'not-allowed' : 'pointer',
+                }}
+                disabled={isAiLoading || !selectedWaterBodyId}
+                onClick={() => handleAskAi('Explain current water condition')}
+              >
+                [ Explain current water condition ]
+              </button>
+              <button
+                style={{
+                  ...styles.quickNavBtn,
+                  backgroundColor: '#f0f9ff',
+                  borderColor: '#7dd3fc',
+                  color: '#0369a1',
+                  fontWeight: 700,
+                  padding: '0.35rem 0.65rem',
+                  fontSize: '0.72rem',
+                  cursor: (isAiLoading || !selectedWaterBodyId) ? 'not-allowed' : 'pointer',
+                }}
+                disabled={isAiLoading || !selectedWaterBodyId}
+                onClick={() => handleAskAi('Summarize changes over time')}
+              >
+                [ Summarize changes over time ]
+              </button>
+              <button
+                style={{
+                  ...styles.quickNavBtn,
+                  backgroundColor: '#faf5ff',
+                  borderColor: '#d8b4fe',
+                  color: '#6b21a8',
+                  fontWeight: 700,
+                  padding: '0.35rem 0.65rem',
+                  fontSize: '0.72rem',
+                  cursor: (isAiLoading || !selectedWaterBodyId) ? 'not-allowed' : 'pointer',
+                }}
+                disabled={isAiLoading || !selectedWaterBodyId}
+                onClick={() => handleAskAi('Explain spectral indicators')}
+              >
+                [ Explain spectral indicators ]
+              </button>
+            </div>
+          </div>
+
+          {/* Custom Question Bar */}
+          <div>
+            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: '#475569', marginBottom: '0.4rem', letterSpacing: '0.04em' }}>
+              Ask a question:
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input
+                type="text"
+                value={aiQuestion}
+                onChange={e => setAiQuestion(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && aiQuestion.trim() && !isAiLoading && selectedWaterBodyId) {
+                    handleAskAi(aiQuestion.trim());
+                  }
+                }}
+                placeholder="e.g. What changed between the earliest and latest observation?"
+                disabled={isAiLoading || !selectedWaterBodyId}
+                style={{
+                  flex: 1,
+                  padding: '0.45rem 0.75rem',
+                  fontSize: '0.75rem',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '3px',
+                  outline: 'none',
+                  backgroundColor: '#ffffff',
+                }}
+              />
+              <button
+                style={{
+                  ...styles.slideBtn,
+                  backgroundColor: '#0f172a',
+                  color: '#ffffff',
+                  fontWeight: 700,
+                  fontSize: '0.72rem',
+                  padding: '0.45rem 1rem',
+                  cursor: (isAiLoading || !aiQuestion.trim() || !selectedWaterBodyId) ? 'not-allowed' : 'pointer',
+                  opacity: (isAiLoading || !aiQuestion.trim() || !selectedWaterBodyId) ? 0.6 : 1,
+                }}
+                disabled={isAiLoading || !aiQuestion.trim() || !selectedWaterBodyId}
+                onClick={() => handleAskAi(aiQuestion.trim())}
+              >
+                {isAiLoading ? 'THINKING...' : 'ASK AI'}
+              </button>
+            </div>
+          </div>
+
+          {/* AI Response Box */}
+          {(aiResponse || isAiLoading || aiError) && (
+            <div
+              style={{
+                marginTop: '0.5rem',
+                padding: '0.85rem 1rem',
+                backgroundColor: '#f8fafc',
+                border: '1px solid #cbd5e1',
+                borderRadius: '3px',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  borderBottom: '1px solid #e2e8f0',
+                  paddingBottom: '0.4rem',
+                  marginBottom: '0.6rem',
+                }}
+              >
+                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#0f172a', letterSpacing: '0.05em' }}>
+                  AI RESPONSE
+                </span>
+                {aiResponse && (
+                  <span style={{ fontSize: '0.65rem', color: '#64748b' }}>
+                    Model: {aiResponse.model}
+                  </span>
+                )}
+              </div>
+
+              {isAiLoading && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#0284c7', fontSize: '0.75rem', padding: '0.5rem 0' }}>
+                  <div style={styles.spinner} />
+                  <span>JalNetra AI is evaluating observation data and spectral indices...</span>
+                </div>
+              )}
+
+              {aiError && !isAiLoading && (
+                <div style={{ color: '#b91c1c', fontSize: '0.75rem', lineHeight: 1.5 }}>
+                  ⚠️ {aiError}
+                </div>
+              )}
+
+              {aiResponse && !isAiLoading && (
+                <div>
+                  <div
+                    style={{
+                      fontSize: '0.78rem',
+                      lineHeight: 1.6,
+                      color: '#1e293b',
+                      whiteSpace: 'pre-wrap',
+                    }}
+                  >
+                    {aiResponse.answer}
+                  </div>
+                  <div
+                    style={{
+                      marginTop: '0.75rem',
+                      paddingTop: '0.4rem',
+                      borderTop: '1px dashed #cbd5e1',
+                      fontSize: '0.65rem',
+                      color: '#64748b',
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    ℹ️ {aiResponse.disclaimer}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

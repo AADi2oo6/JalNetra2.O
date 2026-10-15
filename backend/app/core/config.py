@@ -22,8 +22,18 @@ class Settings(BaseSettings):
     SENTINEL_CLIENT_ID: str = ""
     SENTINEL_CLIENT_SECRET: str = ""
     GEE_PROJECT_ID: str = ""
+
+    # AI Assistant (OpenAI)
+    AI_ENABLED: bool = True
     OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    AI_MAX_OUTPUT_TOKENS: int = 800
+
+    # Telegram Bot
+    TELEGRAM_ENABLED: bool = True
     TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_BOT_USERNAME: str = "jalNetra_Helperbot"
+    TELEGRAM_ALLOWED_CHAT_IDS: str = ""  # Comma-separated or empty for all
 
     # Water Body Discovery (Phase 2)
     WATERBODY_DISCOVERY_ENABLED: bool = True

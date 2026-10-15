@@ -18,6 +18,7 @@ from app.services.water_body_service import (
 from app.services.storage_service import StoragePathTraversalError
 from app.services.discovery import DiscoveryProviderError
 from app.services.satellite import SatelliteServiceError
+from app.services.ai import AIServiceError
 
 logger = logging.getLogger("jalnetra")
 
@@ -33,7 +34,21 @@ async def lifespan(app: FastAPI):
     logger.info("Storage directories initialized at: %s", settings.resolved_data_dir)
     logger.info("Database URL: %s", settings.resolved_database_url)
 
+    # Initialize Telegram service in background if enabled
+    try:
+        from app.services.telegram import telegram_bot_service
+        await telegram_bot_service.start()
+    except Exception as e:
+        logger.warning("Failed to start Telegram bot service: %s", e)
+
     yield
+
+    # Clean shutdown of Telegram bot service
+    try:
+        from app.services.telegram import telegram_bot_service
+        await telegram_bot_service.stop()
+    except Exception as e:
+        logger.warning("Error stopping Telegram bot service: %s", e)
 
     logger.info("Shutting down %s...", settings.APP_NAME)
 
@@ -120,16 +135,31 @@ def create_app() -> FastAPI:
             ).model_dump(),
         )
 
+    @app.exception_handler(AIServiceError)
+    async def ai_service_error_handler(request: Request, exc: AIServiceError):
+        logger.warning("AI service error: %s", exc.message)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorResponse(
+                error={"code": exc.code, "message": exc.message}
+            ).model_dump(),
+        )
+
     # Global Exception Handlers for consistent API error responses
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         logger.warning("HTTP %s error on %s: %s", exc.status_code, request.url.path, exc.detail)
+        code = f"HTTP_{exc.status_code}"
+        message = str(exc.detail)
+        if isinstance(exc.detail, dict):
+            code = exc.detail.get("code", code)
+            message = exc.detail.get("message", message)
         return JSONResponse(
             status_code=exc.status_code,
             content=ErrorResponse(
                 error={
-                    "code": f"HTTP_{exc.status_code}",
-                    "message": str(exc.detail),
+                    "code": code,
+                    "message": message,
                 }
             ).model_dump(),
         )

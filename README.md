@@ -144,22 +144,58 @@ Visit [http://localhost:5173](http://localhost:5173). Navigate to the **SENTINEL
 
 ---
 
+## AI & Telegram Integration (Foundation Phase)
+
+### 1. JalNetra AI Assistant (OpenAI)
+- **Architecture**: Server-side proxy (`/api/v1/ai/analyze` and `/api/v1/ai/status`) utilizing official `openai` SDK with `gpt-4o-mini`.
+- **Read-Only Invariant**: AI acts strictly as an observational assistant to interpret satellite-derived records and spectral indices (NDTI, NDCI, FAI, anomaly). Never converts remote sensing proxies into uncalibrated laboratory units (NTU, mg/L).
+- **Per-Request Data Isolation**: Structured observation and spectral metadata are injected strictly per selected water body; prevents any cross-contamination.
+- **Analysis Workstation UI**: Dedicated Section 6 on the Analysis Page with one-click quick actions (*Explain current water condition*, *Summarize changes over time*, *Explain spectral indicators*) and custom inquiry input.
+
+### 2. Telegram Bot Integration
+- **Direct Bot Link**: [https://t.me/jalNetra_Helperbot](https://t.me/jalNetra_Helperbot) (`@jalNetra_Helperbot`)
+- **Architecture**: Async background long-polling service (`getUpdates`) via `httpx`. Non-crashing lifecycle — missing tokens or Telegram network issues never bring down FastAPI.
+- **Available Commands**:
+  - `/start`: Welcome message and capabilities overview.
+  - `/help`: Detailed command reference.
+  - `/ping`: Real-time connectivity health check for Telegram API and JalNetra backend.
+  - `/status`: System readiness report (Backend, AI configuration, Telegram connectivity, Database).
+  - `/ai <question>`: Query JalNetra AI directly from Telegram in scientifically cautious, read-only language.
+- **Security & Authorization**: Rejects arbitrary administrative commands. Optional `TELEGRAM_ALLOWED_CHAT_IDS` whitelist for restricted access during development.
+
+---
+
+## Environment Variables
+
+Configure these settings in `backend/.env` (refer to `backend/.env.example`):
+
+```env
+# AI Assistant (OpenAI)
+AI_ENABLED=true
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4o-mini
+AI_MAX_OUTPUT_TOKENS=800
+
+# Telegram Bot
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_BOT_USERNAME=jalNetra_Helperbot
+TELEGRAM_ALLOWED_CHAT_IDS=
+```
+
+> **Security Note**: Never commit actual API keys or bot tokens. All credentials must remain in gitignored `.env` files.
+
+---
+
 ## Running Tests
 
 From `backend` with the virtual environment activated:
 
 ```bash
-pytest -v
+pytest backend/tests -v
 ```
 
-Runs 41 tests verifying:
-1. STAC Item normalization and canonical band mapping (`B02`, `B03`, `B04`, `B08`, `B11`, `B12`, `SCL`, `thumbnail`).
-2. Deterministic scene ranking (cloud cover, spatial overlap, sensing recency).
-3. File-backed STAC query caching and TTL invalidation.
-4. Streaming asset downloading via atomic temporary files with SHA256 checksums.
-5. Idempotent asset acquisition avoiding duplicate downloads.
-6. HTTP REST API endpoints for scene search and acquisition.
-7. Phase 0, 1, and 2 regressions (water body CRUD, storage status, OpenStreetMap discovery).
+Verifies all 129 unit and integration tests across storage, discovery, satellite acquisition, spectral indices, AI service, and Telegram bot.
 
 ---
 
@@ -169,5 +205,6 @@ Runs 41 tests verifying:
 - **Phase 1**: Local Database + Storage Foundation (Complete)
 - **Phase 2**: Global Water-Body Discovery (Complete)
 - **Phase 3**: Sentinel-2 Satellite Acquisition (Complete)
-- **Phase 4**: Spectral Indices & Water Detection (Next)
-- **Phase 5**: Telemetry, Alerting & Reporting
+- **Phase 4**: Spectral Indices & Remote-Sensing Proxies (Complete)
+- **Phase 5**: AI Assistant & Telegram Foundation (Complete)
+- **Phase 6**: Autonomous Telemetry, Proactive Alerting & Remote Dispatch
