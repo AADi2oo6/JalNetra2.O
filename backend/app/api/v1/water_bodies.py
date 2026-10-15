@@ -10,6 +10,7 @@ from app.schemas.water_body import (
     WaterBodyRead,
     WaterBodyListResponse,
 )
+from app.schemas.water_body_summary import WaterBodySummaryResponse
 
 router = APIRouter(prefix="/water-bodies", tags=["Water Bodies"])
 
@@ -96,3 +97,41 @@ def deactivate_water_body(
     service: WaterBodyService = Depends(get_water_body_service),
 ) -> WaterBodyRead:
     return service.deactivate_water_body(water_body_id)
+
+
+@router.get(
+    "/{water_body_id}/summary",
+    response_model=WaterBodySummaryResponse,
+    summary="Get consolidated water body telemetry summary",
+    description="Returns public telemetry summary including surface area, volume estimates, observation frequency, and water quality proxy without exposing filesystem paths.",
+)
+def get_water_body_summary(
+    water_body_id: str,
+    db: Session = Depends(get_db),
+) -> WaterBodySummaryResponse:
+    from app.services.water_body_summary_service import WaterBodySummaryService
+    service = WaterBodySummaryService(db)
+    summary = service.get_water_body_summary(water_body_id)
+    return WaterBodySummaryResponse(
+        id=summary.id,
+        name=summary.name,
+        location=summary.location,
+        surface_area_sq_km=summary.surface_area_sq_km,
+        surface_area_text=summary.surface_area_text,
+        water_volume=summary.water_volume,
+        water_volume_is_estimate=summary.water_volume_is_estimate,
+        water_volume_note=summary.water_volume_note,
+        latest_observation_id=summary.latest_observation_id,
+        latest_observation_date=summary.latest_observation_date,
+        cloud_cover=summary.cloud_cover,
+        apparent_water_extent=summary.apparent_water_extent,
+        observation_count=summary.observation_count,
+        monitoring_start=summary.monitoring_start,
+        monitoring_end=summary.monitoring_end,
+        observation_frequency=summary.observation_frequency,
+        water_quality_label=summary.water_quality_label,
+        water_quality_simple_text=summary.water_quality_simple_text,
+        quality_is_remote_sensing_proxy=summary.quality_is_remote_sensing_proxy,
+        has_stored_visual_image=summary.has_stored_visual_image,
+        image_url=summary.image_url,
+    )

@@ -93,3 +93,36 @@ class TelegramClient:
         except Exception as e:
             logger.warning("Telegram sendMessage failed: %s", type(e).__name__)
             return False
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        photo_bytes: bytes,
+        filename: str = "observation.jpg",
+        caption: Optional[str] = None,
+        parse_mode: Optional[str] = None,
+    ) -> bool:
+        if not self.is_configured:
+            return False
+        url = f"{self._base_url}/sendPhoto"
+        data: Dict[str, Any] = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+        content_type = "image/png" if ext == "png" else "image/jpeg"
+        files = {"photo": (filename, photo_bytes, content_type)}
+
+        client = await self._get_client()
+        try:
+            resp = await client.post(url, data=data, files=files, timeout=45.0)
+            if resp.status_code == 200:
+                body = resp.json()
+                return bool(body.get("ok"))
+            logger.warning("Telegram sendPhoto returned status %s: %s", resp.status_code, resp.text)
+            return False
+        except Exception as e:
+            logger.warning("Telegram sendPhoto failed: %s", type(e).__name__)
+            return False
