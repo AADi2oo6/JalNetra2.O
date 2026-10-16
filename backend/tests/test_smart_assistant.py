@@ -460,3 +460,311 @@ def test_api_visual_status_and_streaming(client: TestClient, db_session, tmp_pat
         bad_id = str(uuid.uuid4())
         res4 = client.get(f"/api/v1/water-bodies/{wb.id}/observations/{bad_id}/visual")
         assert res4.status_code == 404
+
+
+# ==============================================================================
+# 6. WATER SAFETY & SCIENTIFIC LIMITATIONS TESTS
+# ==============================================================================
+
+def test_water_safety_intents_and_context(mock_telegram_client, db_session):
+    """
+    Verifies that safety questions (drinkability, toxicity, bathing, water safety)
+    are correctly classified and resolve conversational context naturally.
+    """
+    wb = WaterBody(
+        id=str(uuid.uuid4()),
+        name="Phewa Tal",
+        normalized_name="phewa tal fewa taal फेवा ताल",
+        country="Nepal",
+        city="Pokhara",
+    )
+    db_session.add(wb)
+    db_session.commit()
+
+    all_wbs = [wb]
+    svc = TelegramIntentService()
+    chat_id = 8888
+
+    # 1. Establish context
+    r0 = svc.classify_intent("How is the water at Phewa Tal?", chat_id, all_wbs)
+    assert r0.intent == TelegramIntent.WATER_QUALITY
+    assert r0.water_body.id == wb.id
+
+    # 2. Contextual follow-up: "Can I drink it?"
+    r1 = svc.classify_intent("Can I drink it?", chat_id, all_wbs)
+    assert r1.intent == TelegramIntent.DRINKABILITY
+    assert r1.water_body.id == wb.id
+    assert r1.context_used is True
+
+    # 3. Contextual follow-up: "Is this water toxic?"
+    r2 = svc.classify_intent("Is this water toxic?", chat_id, all_wbs)
+    assert r2.intent == TelegramIntent.TOXICITY
+    assert r2.water_body.id == wb.id
+
+    # 4. Contextual follow-up: "Can I bathe here?"
+    r3 = svc.classify_intent("Can I bathe here?", chat_id, all_wbs)
+    assert r3.intent == TelegramIntent.BATHING_SAFETY
+    assert r3.water_body.id == wb.id
+
+    # 5. Contextual follow-up: "Will the water level increase?"
+    r4 = svc.classify_intent("Will the water level increase?", chat_id, all_wbs)
+    assert r4.intent == TelegramIntent.WATER_LEVEL_FORECAST
+    assert r4.water_body.id == wb.id
+
+    # 6. Contextual follow-up: "Will it rain?"
+    r5 = svc.classify_intent("Will it rain?", chat_id, all_wbs)
+    assert r5.intent == TelegramIntent.RAIN_FORECAST
+    assert r5.water_body.id == wb.id
+
+
+def test_safety_responses_scientific_limitations(mock_telegram_client, db_session):
+    """
+    Verifies strict safety rules:
+    - NEVER say "Safe to drink"
+    - NEVER say "The water is toxic" based solely on satellite data
+    - ALWAYS include scientific disclaimer and note about laboratory testing
+    """
+    wb = WaterBody(
+        id=str(uuid.uuid4()),
+        name="Phewa Tal",
+        normalized_name="phewa tal",
+        country="Nepal",
+        city="Pokhara",
+    )
+    db_session.add(wb)
+    db_session.commit()
+
+    async def run():
+        handler = TelegramCommandHandler(mock_telegram_client, db_factory=lambda: db_session)
+        chat_id = 7777
+
+        # 1. Ask drinkability
+        msg1 = make_msg(chat_id, "Is the water at Phewa Tal drinkable?")
+        await handler.handle_message(msg1)
+        mock_telegram_client.send_message.assert_called_once()
+        reply1 = mock_telegram_client.send_message.call_args[0][1]
+
+        assert "Drinking Water Assessment" in reply1
+        assert "cannot certify this water as safe for drinking" in reply1.lower()
+        assert "laboratory testing" in reply1.lower()
+        # MUST NOT say safe to drink
+        assert "is safe to drink" not in reply1.lower()
+        assert "is safe for drinking" not in reply1.lower()
+
+        mock_telegram_client.send_message.reset_mock()
+
+        # 2. Ask toxicity
+        msg2 = make_msg(chat_id, "Is this water toxic?")
+        await handler.handle_message(msg2)
+        reply2 = mock_telegram_client.send_message.call_args[0][1]
+
+        assert "Toxicity Assessment" in reply2
+        assert "cannot determine water toxicity from satellite" in reply2.lower()
+        assert "no laboratory toxicity" in reply2.lower()
+        assert "the water is toxic" not in reply2.lower()
+
+        mock_telegram_client.send_message.reset_mock()
+
+        # 3. Ask bathing safety
+        msg3 = make_msg(chat_id, "Can I bathe here?")
+        await handler.handle_message(msg3)
+        reply3 = mock_telegram_client.send_message.call_args[0][1]
+
+        assert "Bathing Safety" in reply3
+        assert "cannot certify that bathing is safe" in reply3.lower()
+        assert "safe for swimming" not in reply3.lower()
+
+    asyncio.run(run())
+
+
+def test_compound_and_weather_trend_responses(mock_telegram_client, db_session):
+    """
+    Tests combined questions like:
+    - 'Is the water drinkable and will the level increase?'
+    - 'How is the water and what is the weather?'
+    """
+    wb = WaterBody(
+        id=str(uuid.uuid4()),
+        name="Phewa Tal",
+        normalized_name="phewa tal",
+        centroid_lat=28.21,
+        centroid_lon=83.95,
+        country="Nepal",
+        city="Pokhara",
+    )
+    db_session.add(wb)
+    db_session.commit()
+
+    from app.services.weather.models import (
+        WeatherResponse,
+        CurrentWeather,
+        DailyForecastItem,
+        WaterLevelTrendInterpretation,
+        WaterLevelTrend,
+        ImpactLevel,
+        ConfidenceLevel,
+        LocationInfo,
+        WeatherConditionCode,
+    )
+
+    mock_weather = WeatherResponse(
+        water_body_id=wb.id,
+        water_body_name=wb.name,
+        fetched_at="2026-10-16T12:00:00Z",
+        from_cache=False,
+        cache_ttl_remaining_seconds=3600,
+        location=LocationInfo(latitude=28.21, longitude=83.95, timezone="Asia/Kathmandu"),
+        current=CurrentWeather(
+            temperature_c=24.0,
+            apparent_temperature_c=25.0,
+            humidity_percent=65,
+            precipitation_mm=2.0,
+            rain_mm=2.0,
+            cloud_cover_percent=75,
+            wind_speed_kmh=8.0,
+            wind_direction_deg=180,
+            weather_code=3,
+            condition="Cloudy",
+            condition_code=WeatherConditionCode.OVERCAST,
+        ),
+        forecast=[
+            DailyForecastItem(
+                date="2026-10-16",
+                weather_code=61,
+                condition="Rain",
+                condition_code=WeatherConditionCode.RAIN,
+                temp_max_c=25.0,
+                temp_min_c=18.0,
+                precipitation_mm=5.0,
+                rain_mm=5.0,
+                precipitation_probability_max=80,
+            ),
+            DailyForecastItem(
+                date="2026-10-17",
+                weather_code=61,
+                condition="Heavy Rain",
+                condition_code=WeatherConditionCode.HEAVY_RAIN,
+                temp_max_c=24.0,
+                temp_min_c=17.0,
+                precipitation_mm=20.0,
+                rain_mm=20.0,
+                precipitation_probability_max=90,
+            ),
+        ],
+        water_level_trend=WaterLevelTrendInterpretation(
+            trend=WaterLevelTrend.LIKELY_RISING,
+            trend_arrow="↑",
+            trend_label="Likely Rising",
+            internal_score=65,
+            confidence=ConfidenceLevel.MODERATE,
+            rainfall_impact=ImpactLevel.HIGH,
+            dryness_impact=ImpactLevel.LOW,
+            forecast_rainfall_7d_mm=25.0,
+            rain_probability_label="High",
+            reason="Significant rainfall forecast over coming days.",
+            expected_response="Water extent likely to expand.",
+            satellite_baseline_status="available",
+        ),
+    )
+
+    async def run():
+        handler = TelegramCommandHandler(mock_telegram_client, db_factory=lambda: db_session)
+        chat_id = 6666
+
+        with patch("app.services.weather.WeatherService.get_weather_for_water_body", AsyncMock(return_value=mock_weather)):
+            # 1. Ask combined drinkability + water level
+            msg1 = make_msg(chat_id, "Is the water at Phewa Tal drinkable and will the level increase?")
+            await handler.handle_message(msg1)
+            assert mock_telegram_client.send_message.call_count >= 1
+            reply1 = mock_telegram_client.send_message.call_args[0][1]
+
+            assert "Drinking Water Assessment" in reply1
+            assert "Water-Level Outlook" in reply1
+            assert "Likely Rising" in reply1
+
+            mock_telegram_client.send_message.reset_mock()
+
+            # 2. Ask combined water quality + weather
+            msg2 = make_msg(chat_id, "How is the water and what is the weather?")
+            await handler.handle_message(msg2)
+            reply2 = mock_telegram_client.send_message.call_args[0][1]
+
+            assert "Water Quality Overview" in reply2
+            assert "Phewa Tal Weather" in reply2
+
+    asyncio.run(run())
+
+
+def test_image_delivery_sendphoto_verification(mock_telegram_client, db_session, tmp_path):
+    """
+    Verifies that:
+    1. Valid local image file is found.
+    2. sendPhoto is called with actual bytes (NOT filesystem path text).
+    3. Correct chat ID, photo filename, caption, and inline buttons are passed.
+    4. No internal local paths are leaked in text.
+    """
+    wb = WaterBody(
+        id=str(uuid.uuid4()),
+        name="Phewa Tal",
+        normalized_name="phewa tal",
+        centroid_lat=28.21,
+        centroid_lon=83.95,
+    )
+    db_session.add(wb)
+    db_session.commit()
+
+    obs_dir = tmp_path / "water_bodies" / wb.id / "observations" / "scene_phewa_latest"
+    obs_dir.mkdir(parents=True, exist_ok=True)
+    real_img = obs_dir / "rgb.jpg"
+    test_binary = b"SIMULATED_SENTINEL_2_PHOTO_BYTES"
+    real_img.write_bytes(test_binary)
+
+    obs = SatelliteObservation(
+        id=str(uuid.uuid4()),
+        water_body_id=wb.id,
+        external_scene_id="scene_phewa_latest",
+        sensing_date=datetime(2026, 10, 11, tzinfo=timezone.utc),
+        cloud_cover_percent=0.0,
+        local_visual_path=f"water_bodies/{wb.id}/observations/scene_phewa_latest/rgb.jpg",
+    )
+    db_session.add(obs)
+    db_session.commit()
+
+    async def run():
+        with patch.object(settings, "DATA_DIR", tmp_path):
+            handler = TelegramCommandHandler(mock_telegram_client, db_factory=lambda: db_session)
+            chat_id = 5555
+
+            # Ask for photo
+            msg = make_msg(chat_id, "Show me the latest image of Phewa Tal")
+            await handler.handle_message(msg)
+
+            # sendPhoto MUST have been called
+            mock_telegram_client.send_photo.assert_called_once()
+            _, kwargs = mock_telegram_client.send_photo.call_args
+
+            assert kwargs["chat_id"] == chat_id
+            assert kwargs["photo_bytes"] == test_binary
+            assert kwargs["filename"] == "rgb.jpg"
+            caption = kwargs["caption"]
+            assert "Phewa Tal" in caption
+            assert "11 Oct 2026" in caption
+            assert "Cloud cover: 0.0%" in caption
+
+            # Verify buttons on photo
+            assert "reply_markup" in kwargs
+            buttons = kwargs["reply_markup"]["inline_keyboard"]
+            assert len(buttons) >= 1
+            button_texts = [b["text"] for row in buttons for b in row]
+            assert "🗺 Location" in button_texts
+            assert "💧 Water Quality" in button_texts
+
+            # Verify NO internal filesystem path was sent as plain text message
+            if mock_telegram_client.send_message.called:
+                for call in mock_telegram_client.send_message.call_args_list:
+                    sent_text = call[0][1]
+                    assert str(tmp_path) not in sent_text
+                    assert "observations/scene_phewa_latest" not in sent_text
+
+    asyncio.run(run())
+

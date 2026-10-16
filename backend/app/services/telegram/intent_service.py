@@ -23,6 +23,12 @@ class TelegramIntent(str, Enum):
     MONITORING_FREQUENCY = "MONITORING_FREQUENCY"
     WATER_VOLUME = "WATER_VOLUME"
     WEATHER = "WEATHER"
+    RAIN_FORECAST = "RAIN_FORECAST"
+    WATER_LEVEL_FORECAST = "WATER_LEVEL_FORECAST"
+    DRINKABILITY = "DRINKABILITY"
+    TOXICITY = "TOXICITY"
+    BATHING_SAFETY = "BATHING_SAFETY"
+    WATER_SAFETY = "WATER_SAFETY"
     HELP = "HELP"
     STATUS = "STATUS"
     AI_QUESTION = "AI_QUESTION"
@@ -32,6 +38,7 @@ class TelegramIntent(str, Enum):
 @dataclass
 class IntentResult:
     intent: TelegramIntent
+    secondary_intent: Optional[TelegramIntent] = None
     water_body: Optional[WaterBody] = None
     water_body_candidates: Optional[List[WaterBody]] = None
     raw_query: str = ""
@@ -43,14 +50,28 @@ class IntentResult:
 GENERIC_WATER_TERMS = {
     "lake", "lakes", "reservoir", "reservoirs", "dam", "dams",
     "water", "waterbody", "waterbodies", "body", "pond", "ponds",
-    "river", "rivers", "sea", "lagoon", "wetland", "the", "a", "an",
+    "river", "rivers", "sea", "lagoon", "wetland", "tal", "taal",
+    "the", "a", "an", "this", "that", "its", "it", "here", "there",
+}
+
+# Transliteration and alias dictionary for registered entities
+ENTITY_SYNONYMS = {
+    "phewa": ["fewa", "phewa", "फेवा"],
+    "fewa": ["fewa", "phewa", "फेवा"],
+    "फेवा": ["fewa", "phewa", "फेवा"],
+    "harsul": ["harsul", "हरसूल"],
+    "salim": ["salim", "सलीम"],
+    "chilika": ["chilika", "चिलिका"],
+    "ooty": ["ooty", "ऊटी"],
+    "khadakwasla": ["khadakwasla", "खडकवासला"],
 }
 
 
 class TelegramIntentService:
     """
     Deterministic intent and entity classification engine for JalNetra Telegram Bot,
-    with conversational context tracking and secure structured OpenAI fallback.
+    with conversational context tracking, multi-intent compound routing,
+    and secure structured OpenAI fallback.
     """
 
     def __init__(self, ai_service: Optional[AIService] = None):
@@ -72,10 +93,9 @@ class TelegramIntentService:
     ) -> List[WaterBody]:
         """
         Extracts candidate water bodies mentioned in user text using exact,
-        substring, and token-based fuzzy matching.
+        substring, token-based, and alias/transliteration matching.
         """
         clean_text = text.lower().strip()
-        # Remove common punctuation
         clean_text_words = set(re.findall(r"\b\w+\b", clean_text))
 
         # 1. Exact match against full name or normalized name
@@ -98,27 +118,38 @@ class TelegramIntentService:
                 exact_substring_matches.append(wb)
 
         if exact_substring_matches:
-            # Prefer longest matching name if multiple match
             exact_substring_matches.sort(key=lambda w: len(w.name or ""), reverse=True)
             return exact_substring_matches
 
-        # 3. Specific distinctive tokens (e.g. "salim ali" for "Salim Ali Lake", "ooty" for "Ooty Lake")
+        # 3. Alias / transliteration matching (e.g. "phewa" <-> "fewa" <-> "फेवा")
+        for word in clean_text_words:
+            if word in ENTITY_SYNONYMS:
+                synonyms = ENTITY_SYNONYMS[word]
+                for wb in all_wbs:
+                    wb_full = f"{wb.name or ''} {wb.normalized_name or ''}".lower()
+                    if any(s in wb_full for s in synonyms):
+                        return [wb]
+
+        # 4. Specific distinctive tokens (e.g. "salim ali" for "Salim Ali Lake", "ooty" for "Ooty Lake")
         token_matches = []
         for wb in all_wbs:
             wb_name = (wb.name or "").strip().lower()
-            wb_tokens = set(re.findall(r"\b\w+\b", wb_name))
-            distinctive_tokens = wb_tokens - GENERIC_WATER_TERMS
+            wb_norm = (wb.normalized_name or "").strip().lower()
+            name_tokens = set(re.findall(r"\b\w+\b", wb_name))
+            norm_tokens = set(re.findall(r"\b\w+\b", wb_norm))
+            all_tokens = name_tokens | norm_tokens
+
+            distinctive_tokens = all_tokens - GENERIC_WATER_TERMS
             if not distinctive_tokens:
-                distinctive_tokens = wb_tokens
+                distinctive_tokens = all_tokens
 
-            # Check if all distinctive tokens of this lake appear in user text
-            if distinctive_tokens and distinctive_tokens.issubset(clean_text_words):
+            # Check if any distinctive token >= 4 chars matches
+            if distinctive_tokens and any(tok in clean_text_words and len(tok) >= 4 for tok in distinctive_tokens):
                 token_matches.append(wb)
-            # Or if any distinctive multi-character token >= 4 letters appears
-            elif any(tok in clean_text_words and len(tok) >= 4 for tok in distinctive_tokens):
+            elif distinctive_tokens and distinctive_tokens.issubset(clean_text_words):
                 token_matches.append(wb)
 
-        # Remove duplicates while preserving order
+        # Deduplicate matches
         seen = set()
         unique_matches = []
         for wb in token_matches:
@@ -137,6 +168,7 @@ class TelegramIntentService:
         """
         Main natural-language classifier.
         Uses deterministic keyword/entity rules first.
+        Handles conversational context, pronoun references, and compound intents.
         Falls back to structured OpenAI classification only for ambiguous inputs.
         """
         raw = text.strip()
@@ -168,7 +200,7 @@ class TelegramIntentService:
         if any(re.search(pat, lower) for pat in list_patterns):
             return IntentResult(intent=TelegramIntent.LIST_WATER_BODIES, raw_query=raw)
 
-        # 3. Entity detection
+        # 3. Entity detection & Context tracking
         matched_wbs = self._find_water_body_entities(raw, all_wbs)
 
         target_wb: Optional[WaterBody] = None
@@ -186,9 +218,8 @@ class TelegramIntentService:
                 raw_query=raw,
             )
         else:
-            # No registered water body matched in text.
-            # Check if user explicitly named another water body (e.g. "Chilika Lake", "Pichola Reservoir")
-            # If they named an explicit entity not in our DB, do NOT fallback to the previous context.
+            # No registered water body explicitly named.
+            # Check if user named an explicit UNREGISTERED lake (e.g. "Lake Superior", "Pichola Reservoir")
             named_lake_match = re.search(
                 r"\b([a-zA-Z0-9\-\'\s]{2,})\s+(lake|reservoir|dam|pond|talab|wetland|water\s*body)\b",
                 lower,
@@ -196,8 +227,13 @@ class TelegramIntentService:
             is_explicit_unregistered_entity = False
             if named_lake_match:
                 prefix = named_lake_match.group(1).strip()
-                prefix_words = set(prefix.split()) - {"the", "a", "an", "this", "that", "its", "our"}
-                if prefix_words:
+                prefix_stopwords = {
+                    "the", "a", "an", "this", "that", "its", "it", "our", "is", "will", "does",
+                    "can", "to", "at", "in", "for", "about", "of", "from", "on", "what", "how",
+                    "happen", "happens", "safe", "drinking", "level", "extent", "temperature",
+                }
+                substantive_prefix_words = set(prefix.split()) - prefix_stopwords
+                if substantive_prefix_words:
                     is_explicit_unregistered_entity = True
 
             stored_id = self.get_chat_context(chat_id)
@@ -208,10 +244,138 @@ class TelegramIntentService:
                         context_used = True
                         break
 
-        # 4. Deterministic Intent Detection based on Keywords
-        # A. Latest visual image
-        image_keywords = ["image", "photo", "picture", "visual", "satellite", "look like", "satellite view", "satellite image"]
-        if any(kw in lower for kw in image_keywords):
+        # 4. Compound / Multi-Intent Detection
+        # A. Drinkability + Water Level Forecast
+        is_drink = bool(re.search(r"\b(drink|drinkable|potable|drinking)\b", lower))
+        is_level = bool(
+            re.search(
+                r"\b(water\s*level|lake\s*level|level\s+(increase|rise|fall|drop|decrease|go\s*down)|dry\s*up|fill\s*up|rise\s+or\s+fall)\b",
+                lower,
+            )
+            or re.search(r"\bwill\s+(it|the\s+lake|water|reservoir)\s+(increase|rise|fall|dry|fill)\b", lower)
+        )
+        if is_drink and is_level:
+            return IntentResult(
+                intent=TelegramIntent.DRINKABILITY,
+                secondary_intent=TelegramIntent.WATER_LEVEL_FORECAST,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # B. Water Quality + Weather
+        is_quality = bool(
+            re.search(r"\b(how\s+is\s+the\s+water|water\s*quality|clarity|condition\s+of\s+the\s+water)\b", lower)
+        )
+        is_weather = bool(
+            re.search(r"\b(weather|rain|raining|rainfall|forecast|temperature|hot|cold|climate)\b", lower)
+        )
+        if is_quality and is_weather:
+            return IntentResult(
+                intent=TelegramIntent.WATER_QUALITY,
+                secondary_intent=TelegramIntent.WEATHER,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # 5. Dedicated Single Intents
+
+        # A. DRINKABILITY
+        # "Is this water drinkable?", "Can I drink the water?", "Can I drink it?", "Is the lake safe for drinking?"
+        drinkability_patterns = [
+            r"\b(drinkable|potable|potability)\b",
+            r"\b(can\s+(i|we)\s+drink|safe\s+(for|to)\s+drink|drink\s+(the|this|it)\s*water|drink\s+it)\b",
+            r"\bdrinking\s+water\b",
+            r"\bsafe\s+for\s+drinking\b",
+        ]
+        if any(re.search(pat, lower) for pat in drinkability_patterns):
+            return IntentResult(
+                intent=TelegramIntent.DRINKABILITY,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # B. TOXICITY
+        # "Is this water toxic?", "Is the water polluted?", "Is it toxic?", "Are there toxins?"
+        toxicity_patterns = [
+            r"\b(toxic|toxicity|poison|poisonous|toxin|toxins|polluted|pollution|contaminated|contamination)\b",
+        ]
+        if any(re.search(pat, lower) for pat in toxicity_patterns):
+            return IntentResult(
+                intent=TelegramIntent.TOXICITY,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # C. BATHING / SWIMMING SAFETY
+        # "Can I bathe here?", "Is it safe to swim?", "Can I swim in it?"
+        bathing_patterns = [
+            r"\b(bathe|bathing|bath|swim|swimming|swimmable)\b",
+            r"\b(can\s+(i|we)\s+bathe|safe\s+to\s+swim|safe\s+for\s+swimming|can\s+(i|we)\s+swim)\b",
+        ]
+        if any(re.search(pat, lower) for pat in bathing_patterns):
+            return IntentResult(
+                intent=TelegramIntent.BATHING_SAFETY,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # D. GENERAL WATER SAFETY
+        # "Is the water safe?", "Is it safe?", "Is it safe here?"
+        safety_patterns = [
+            r"\b(is\s+(the\s+water|it|this\s+water)\s+safe|water\s+safe|safe\s+water|water\s+safety)\b",
+        ]
+        if any(re.search(pat, lower) for pat in safety_patterns):
+            return IntentResult(
+                intent=TelegramIntent.WATER_SAFETY,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # E. WATER LEVEL FORECAST & HYDROLOGICAL OUTLOOK
+        # "Will the water level increase?", "Will the lake level rise?", "Will the lake dry up?", "Will it go down?",
+        # "Will the reservoir fill up?", "What will happen to the lake over the next few days?"
+        water_level_patterns = [
+            r"\b(water\s*level|lake\s*level|reservoir\s*level)\b",
+            r"\b(level\s+(increase|rise|fall|drop|decrease|go\s*down))\b",
+            r"\b(rise\s+or\s+fall|dry\s*up|drying\s*up|fill\s*up|filling\s*up|overflow)\b",
+            r"\bwill\s+(it|the\s+lake|water|the\s+reservoir|its\s+level)\s+(increase|rise|fall|drop|decrease|dry|fill|go\s*down)\b",
+            r"\bwill\s+its\s+level\s+(increase|rise|fall|drop|decrease|go\s*down)\b",
+            r"\bwhat\s+will\s+happen\s+to\s+the\s+(lake|water|reservoir)\b",
+            r"\bwill\s+rainfall\s+increase\s+the\s+water\s*level\b",
+        ]
+        if any(re.search(pat, lower) for pat in water_level_patterns):
+            return IntentResult(
+                intent=TelegramIntent.WATER_LEVEL_FORECAST,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # F. LATEST IMAGE / PHOTO
+        # "Show image", "Show me the lake", "Send the latest photo", "Can I see the latest image?",
+        # "What does the lake look like?", "Show its satellite image", "Give me the latest visual"
+        image_keywords = [
+            "image", "photo", "picture", "visual", "satellite", "satellite image",
+            "satellite view", "satellite photo", "look like",
+        ]
+        image_phrases = [
+            r"\b(show\s+image|show\s+me\s+the\s+lake|send\s+(the\s+)?(latest\s+)?photo|see\s+(the\s+)?(latest\s+)?image|latest\s+visual)\b",
+            r"\b(show\s+its\s+(latest\s+)?image|show\s+me\s+its\s+image|show\s+photo|latest\s+picture)\b",
+        ]
+        if any(kw in lower for kw in image_keywords) or any(re.search(pat, lower) for pat in image_phrases):
             return IntentResult(
                 intent=TelegramIntent.LATEST_IMAGE,
                 water_body=target_wb,
@@ -220,7 +384,38 @@ class TelegramIntentService:
                 context_used=context_used,
             )
 
-        # B. Location / Google Maps
+        # G. WEATHER / RAIN FORECAST
+        # "What's the weather there?", "Will it rain?", "Will it rain tomorrow?", "What is the forecast?",
+        # "Will there be heavy rain this week?"
+        rain_patterns = [
+            r"\b(rain|raining|rainfall|rainy|precipitation)\b",
+            r"\bwill\s+it\s+rain\b",
+            r"\bheavy\s+rain\b",
+        ]
+        weather_patterns = [
+            r"\b(weather|forecast|temperature|climate)\b",
+            r"\bwhat\s+is\s+the\s+forecast\b",
+            r"\bwhat(\'s|\s+is)\s+the\s+weather\b",
+        ]
+        if any(re.search(pat, lower) for pat in rain_patterns):
+            return IntentResult(
+                intent=TelegramIntent.RAIN_FORECAST,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+        if any(re.search(pat, lower) for pat in weather_patterns):
+            return IntentResult(
+                intent=TelegramIntent.WEATHER,
+                water_body=target_wb,
+                raw_query=raw,
+                is_today_query=is_today,
+                context_used=context_used,
+            )
+
+        # H. LOCATION / GOOGLE MAPS
+        # "Where is it?", "Where is Salim Ali Lake?", "Location of Phewa Tal"
         location_keywords = ["where is", "where's", "where", "location", "locate", "map", "maps", "coordinates", "situated", "directions"]
         if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in location_keywords):
             return IntentResult(
@@ -231,10 +426,11 @@ class TelegramIntentService:
                 context_used=context_used,
             )
 
-        # C. Water Quality
+        # I. WATER QUALITY
+        # "How is the water?", "What is the water quality of Chilika Lake?", "Water clarity", "Algae"
         quality_keywords = [
             "water quality", "quality", "clean", "dirty", "clarity", "clear",
-            "algae", "turbid", "turbidity", "drinking", "potable", "safe to drink",
+            "algae", "algal", "turbid", "turbidity", "chlorophyll",
             "how is the water", "water condition", "condition of the water",
         ]
         if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in quality_keywords):
@@ -246,7 +442,7 @@ class TelegramIntentService:
                 context_used=context_used,
             )
 
-        # D. Water Extent / Surface Area
+        # J. WATER EXTENT / SURFACE AREA
         extent_keywords = ["surface area", "water extent", "how big", "area of", "extent of", "size"]
         if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in extent_keywords):
             return IntentResult(
@@ -257,7 +453,7 @@ class TelegramIntentService:
                 context_used=context_used,
             )
 
-        # E. Change / Monitoring Frequency
+        # K. MONITORING FREQUENCY / CHANGE
         freq_keywords = ["how often", "frequency", "change", "changes", "monitoring", "monitored", "how frequently", "observations", "observation history"]
         if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in freq_keywords):
             return IntentResult(
@@ -268,7 +464,7 @@ class TelegramIntentService:
                 context_used=context_used,
             )
 
-        # F. Water Volume
+        # L. WATER VOLUME
         volume_keywords = ["volume", "how much water", "capacity", "water amount", "depth", "deep"]
         if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in volume_keywords):
             return IntentResult(
@@ -279,19 +475,8 @@ class TelegramIntentService:
                 context_used=context_used,
             )
 
-        # G. Weather / Climate (Phase 6 placeholder)
-        weather_keywords = ["weather", "temperature", "forecast", "rain", "rainfall", "climate", "hot", "cold"]
-        if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in weather_keywords):
-            return IntentResult(
-                intent=TelegramIntent.WEATHER,
-                water_body=target_wb,
-                raw_query=raw,
-                is_today_query=is_today,
-                context_used=context_used,
-            )
-
-        # H. If a water body was recognized and user said "Show X", "Tell me about X", "How is X today?", "Give me everything about X"
-        if target_wb is not None:
+        # M. Recognized water body: "Show X", "Tell me about X", "How is X today?", "X"
+        if target_wb is not None and (not context_used or is_today):
             return IntentResult(
                 intent=TelegramIntent.WATER_BODY_INFO,
                 water_body=target_wb,
@@ -300,7 +485,7 @@ class TelegramIntentService:
                 context_used=context_used,
             )
 
-        # 5. Fallback: If configured with AI and query looks conversational/questioning
+        # 6. Fallback: If configured with AI and query looks conversational/questioning
         if self.ai_service and getattr(self.ai_service, "is_configured", False) and ("?" in lower or len(lower.split()) > 2):
             ai_structured = self._classify_with_openai(raw, [w.name for w in all_wbs if w.name])
             if ai_structured:
@@ -321,7 +506,7 @@ class TelegramIntentService:
                     context_used=context_used,
                 )
 
-        # 6. Default to AI question if it has a question mark or general conversational phrase
+        # 7. Default to AI question if it has a question mark or general conversational phrase
         if "?" in lower or lower.startswith(("what", "why", "how", "tell", "explain")):
             return IntentResult(
                 intent=TelegramIntent.AI_QUESTION,
@@ -354,7 +539,9 @@ class TelegramIntentService:
                 f"Available water bodies: {', '.join(available_names[:30])}\n\n"
                 "Classify the user message into one of these intents:\n"
                 "LIST_WATER_BODIES, WATER_BODY_INFO, LATEST_IMAGE, LOCATION, WATER_QUALITY, "
-                "WATER_EXTENT, MONITORING_FREQUENCY, WATER_VOLUME, WEATHER, HELP, STATUS, AI_QUESTION.\n\n"
+                "WATER_EXTENT, MONITORING_FREQUENCY, WATER_VOLUME, WEATHER, RAIN_FORECAST, "
+                "WATER_LEVEL_FORECAST, DRINKABILITY, TOXICITY, BATHING_SAFETY, WATER_SAFETY, "
+                "HELP, STATUS, AI_QUESTION.\n\n"
                 "Return strictly a JSON object with keys:\n"
                 "{\n"
                 '  "intent": "<INTENT_NAME>",\n'

@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any, Dict, List, Optional
 import httpx
@@ -131,6 +132,7 @@ class TelegramClient:
         filename: str = "observation.jpg",
         caption: Optional[str] = None,
         parse_mode: Optional[str] = None,
+        reply_markup: Optional[Dict[str, Any]] = None,
     ) -> bool:
         if not self.is_configured:
             return False
@@ -140,6 +142,8 @@ class TelegramClient:
             data["caption"] = caption
         if parse_mode:
             data["parse_mode"] = parse_mode
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup) if isinstance(reply_markup, dict) else str(reply_markup)
 
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
         content_type = "image/png" if ext == "png" else "image/jpeg"

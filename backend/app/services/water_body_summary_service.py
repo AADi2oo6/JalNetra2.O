@@ -50,7 +50,7 @@ class WaterBodySummaryService:
 
     def __init__(self, db: Session, data_dir: Optional[Path] = None):
         self.db = db
-        self.data_dir = data_dir or Path(settings.DATA_DIR)
+        self.data_dir = data_dir or settings.resolved_data_dir
         self.wb_repo = WaterBodyRepository(db)
         self.obs_repo = SatelliteObservationRepository(db)
 

@@ -381,9 +381,10 @@ async def test_telegram_weather_intent_integration():
             chat_id, text = call_args[0], call_args[1]
             assert chat_id == 777
             assert "Telegram Weather Lake" in text
-            assert "Current:" in text
-            assert "Water-level trend:" in text
-            assert "Likely Rising" in text
+            assert "Now:" in text
+            assert "Today:" in text
+            assert "Next 7 days:" in text
+            assert "Overall:" in text
 
     finally:
         db.delete(test_wb)

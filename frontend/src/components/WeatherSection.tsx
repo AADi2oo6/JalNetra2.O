@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import './WeatherSection.css';
 import {
   WeatherResponse,
   WeatherConditionCode,
-  WaterLevelTrendType,
   getWaterBodyWeather,
 } from '../api/weather';
 
@@ -12,15 +12,14 @@ interface WeatherSectionProps {
 }
 
 // ─── Weather SVG Icons ────────────────────────────────────────────────────────
-const WeatherIcon: React.FC<{ code: WeatherConditionCode; size?: number; className?: string }> = ({
+const WeatherIcon: React.FC<{ code: WeatherConditionCode; size?: number }> = ({
   code,
-  size = 28,
-  className = '',
+  size = 32,
 }) => {
   switch (code) {
     case 'clear':
       return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#eab308" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#eab308" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="5" fill="#fef08a" />
           <line x1="12" y1="1" x2="12" y2="3" />
           <line x1="12" y1="21" x2="12" y2="23" />
@@ -34,7 +33,7 @@ const WeatherIcon: React.FC<{ code: WeatherConditionCode; size?: number; classNa
       );
     case 'partly_cloudy':
       return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 2v2" stroke="#eab308" />
           <path d="M4.93 4.93l1.41 1.41" stroke="#eab308" />
           <path d="M20 12h2" stroke="#eab308" />
@@ -46,7 +45,7 @@ const WeatherIcon: React.FC<{ code: WeatherConditionCode; size?: number; classNa
     case 'overcast':
     case 'fog':
       return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" fill="#f1f5f9" />
           {code === 'fog' && <line x1="4" y1="22" x2="20" y2="22" stroke="#94a3b8" strokeWidth="2" />}
         </svg>
@@ -54,32 +53,41 @@ const WeatherIcon: React.FC<{ code: WeatherConditionCode; size?: number; classNa
     case 'drizzle':
     case 'rain':
       return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25" fill="#f0f9ff" />
-          <line x1="8" y1="19" x2="8" y2="21" stroke="#0ea5e9" strokeWidth="2" />
-          <line x1="12" y1="17" x2="12" y2="21" stroke="#0ea5e9" strokeWidth="2" />
-          <line x1="16" y1="19" x2="16" y2="21" stroke="#0ea5e9" strokeWidth="2" />
+          <line x1="8" y1="19" x2="8" y2="22" stroke="#0ea5e9" strokeWidth="2" />
+          <line x1="12" y1="17" x2="12" y2="22" stroke="#0ea5e9" strokeWidth="2" />
+          <line x1="16" y1="19" x2="16" y2="22" stroke="#0ea5e9" strokeWidth="2" />
         </svg>
       );
     case 'heavy_rain':
     case 'thunderstorm':
       return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#1e293b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#1e293b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M19 14.58A5 5 0 0 0 17 5h-1.26A8 8 0 1 0 3 13.25" fill="#e2e8f0" />
           {code === 'thunderstorm' ? (
             <polygon points="13 11 9 17 12 17 11 23 16 16 13 16 13 11" fill="#eab308" stroke="#ca8a04" strokeWidth="1" />
           ) : (
             <>
-              <line x1="8" y1="16" x2="6" y2="22" stroke="#0284c7" strokeWidth="2" />
-              <line x1="12" y1="16" x2="10" y2="22" stroke="#0284c7" strokeWidth="2" />
-              <line x1="16" y1="16" x2="14" y2="22" stroke="#0284c7" strokeWidth="2" />
+              <line x1="8" y1="16" x2="6" y2="22" stroke="#0284c7" strokeWidth="2.5" />
+              <line x1="12" y1="16" x2="10" y2="22" stroke="#0284c7" strokeWidth="2.5" />
+              <line x1="16" y1="16" x2="14" y2="22" stroke="#0284c7" strokeWidth="2.5" />
             </>
           )}
         </svg>
       );
+    case 'snow':
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25" fill="#f8fafc" />
+          <line x1="8" y1="19" x2="8" y2="21" stroke="#38bdf8" strokeWidth="2" />
+          <line x1="12" y1="18" x2="12" y2="21" stroke="#38bdf8" strokeWidth="2" />
+          <line x1="16" y1="19" x2="16" y2="21" stroke="#38bdf8" strokeWidth="2" />
+        </svg>
+      );
     default:
       return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="10" />
           <line x1="12" y1="8" x2="12" y2="12" />
           <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -88,55 +96,33 @@ const WeatherIcon: React.FC<{ code: WeatherConditionCode; size?: number; classNa
   }
 };
 
-// ─── Helpers for trend styling ────────────────────────────────────────────────
-function getTrendBadgeStyle(trend: WaterLevelTrendType) {
-  switch (trend) {
-    case 'LIKELY_RISING':
-      return {
-        bg: 'bg-emerald-50 border-emerald-300 text-emerald-800',
-        badgeBg: 'bg-emerald-600 text-white',
-        arrowColor: 'text-emerald-700',
-      };
-    case 'POSSIBLY_RISING':
-      return {
-        bg: 'bg-teal-50 border-teal-300 text-teal-800',
-        badgeBg: 'bg-teal-600 text-white',
-        arrowColor: 'text-teal-700',
-      };
-    case 'STABLE':
-      return {
-        bg: 'bg-blue-50 border-blue-200 text-blue-800',
-        badgeBg: 'bg-blue-600 text-white',
-        arrowColor: 'text-blue-700',
-      };
-    case 'POSSIBLY_FALLING':
-      return {
-        bg: 'bg-amber-50 border-amber-300 text-amber-800',
-        badgeBg: 'bg-amber-600 text-white',
-        arrowColor: 'text-amber-700',
-      };
-    case 'LIKELY_FALLING':
-      return {
-        bg: 'bg-rose-50 border-rose-300 text-rose-800',
-        badgeBg: 'bg-rose-600 text-white',
-        arrowColor: 'text-rose-700',
-      };
-    default:
-      return {
-        bg: 'bg-slate-50 border-slate-300 text-slate-700',
-        badgeBg: 'bg-slate-600 text-white',
-        arrowColor: 'text-slate-600',
-      };
+// ─── Formatters ───────────────────────────────────────────────────────────────
+function formatDayLabel(dateStr: string, index: number): { day: string; date: string } {
+  if (index === 0) {
+    try {
+      const d = new Date(dateStr + 'T00:00:00');
+      const datePart = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      return { day: 'TODAY', date: datePart };
+    } catch {
+      return { day: 'TODAY', date: dateStr };
+    }
+  }
+  try {
+    const d = new Date(dateStr + 'T00:00:00');
+    const dayName = d.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase();
+    const datePart = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    return { day: dayName, date: datePart };
+  } catch {
+    return { day: dateStr, date: '' };
   }
 }
 
-function formatDayName(dateStr: string, index: number): string {
-  if (index === 0) return 'Today';
+function formatUpdatedTimestamp(isoStr: string): string {
   try {
-    const d = new Date(dateStr + 'T00:00:00');
-    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    const d = new Date(isoStr);
+    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch {
-    return dateStr;
+    return 'Just now';
   }
 }
 
@@ -169,21 +155,30 @@ export const WeatherSection: React.FC<WeatherSectionProps> = ({ waterBodyId, wat
     }
   }, [waterBodyId]);
 
+  // Determine trend styling class
+  const trendClass = useMemo(() => {
+    if (!weather) return 'jn-trend-unknown';
+    const t = weather.water_level_trend.trend;
+    if (t === 'LIKELY_RISING' || t === 'POSSIBLY_RISING') return 'jn-trend-rising';
+    if (t === 'LIKELY_FALLING' || t === 'POSSIBLY_FALLING') return 'jn-trend-falling';
+    if (t === 'STABLE') return 'jn-trend-stable';
+    return 'jn-trend-unknown';
+  }, [weather]);
+
+  const trendColor = useMemo(() => {
+    if (!weather) return '#475569';
+    const t = weather.water_level_trend.trend;
+    if (t.includes('RISING')) return '#15803d';
+    if (t.includes('FALLING')) return '#b45309';
+    return '#0369a1';
+  }, [weather]);
+
   if (loading) {
     return (
-      <div className="bg-white border border-slate-200 p-6 shadow-sm mb-6">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">🌤</span>
-            <h3 className="font-semibold text-slate-800 text-base uppercase tracking-wider">
-              Weather & Water Forecast
-            </h3>
-          </div>
-          <span className="text-xs text-slate-500 animate-pulse">Connecting to Open-Meteo...</span>
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-pulse">
-          <div className="h-44 bg-slate-100 rounded-sm"></div>
-          <div className="h-44 bg-slate-100 rounded-sm lg:col-span-2"></div>
+      <div className="jn-weather-dashboard" style={{ padding: '1.5rem', textAlign: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.65rem', color: '#0284c7', fontSize: '0.85rem', fontWeight: 600 }}>
+          <span style={{ fontSize: '1.25rem', animation: 'spin 1.5s linear infinite' }}>⏳</span>
+          <span>Connecting to Open-Meteo &amp; retrieving weather intelligence...</span>
         </div>
       </div>
     );
@@ -191,334 +186,460 @@ export const WeatherSection: React.FC<WeatherSectionProps> = ({ waterBodyId, wat
 
   if (error || !weather) {
     return (
-      <div className="bg-white border border-slate-200 p-6 shadow-sm mb-6">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">🌤</span>
-            <h3 className="font-semibold text-slate-800 text-base uppercase tracking-wider">
-              Weather & Water Forecast
+      <div className="jn-weather-dashboard">
+        <div className="jn-weather-header">
+          <div className="jn-weather-title-group">
+            <div className="jn-weather-kicker">
+              <span>🌤</span>
+              <span>METEOROLOGICAL INTELLIGENCE</span>
+            </div>
+            <h3 className="jn-weather-title">
+              Weather &amp; Water Forecast {waterBodyName ? `— ${waterBodyName}` : ''}
             </h3>
           </div>
-          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-mono">
-            Open-Meteo
-          </span>
-        </div>
-        <div className="p-4 bg-slate-50 border border-slate-200 text-slate-700 text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div>
-            <div className="font-semibold text-slate-800 mb-1">Weather Data Temporarily Unavailable</div>
-            <p className="text-xs text-slate-600">{error || 'Unable to connect to the weather forecast service.'}</p>
-            <p className="text-xs text-slate-500 mt-1">Satellite monitoring and spectral indicators remain fully operational.</p>
+          <div className="jn-weather-header-actions">
+            <span className="jn-provider-badge">Open-Meteo</span>
+            <button className="jn-refresh-btn" onClick={() => fetchWeather(true)}>
+              ↻ Retry
+            </button>
           </div>
-          <button
-            onClick={() => fetchWeather(true)}
-            className="px-3 py-1.5 bg-white border border-slate-300 text-slate-700 text-xs font-medium hover:bg-slate-100 transition-colors shadow-sm"
-          >
-            Retry Weather
-          </button>
+        </div>
+        <div style={{ padding: '1.25rem', backgroundColor: '#fef2f2', borderTop: '1px solid #fee2e2', color: '#991b1b', fontSize: '0.78rem' }}>
+          <div style={{ fontWeight: 800, marginBottom: '0.25rem' }}>⚠️ WEATHER DATA UNAVAILABLE</div>
+          <div>{error || 'Unable to retrieve meteorological forecast data.'}</div>
+          <div style={{ marginTop: '0.5rem', fontSize: '0.72rem', color: '#7f1d1d' }}>
+            Satellite monitoring, temporal comparisons, and spectral proxies remain fully operational.
+          </div>
         </div>
       </div>
     );
   }
 
   const { current, forecast, water_level_trend: trend, location } = weather;
-  const trendStyle = getTrendBadgeStyle(trend.trend);
-
-  // Rainfall bar chart scaling calculations
   const maxPrecip = Math.max(...forecast.map((d) => d.precipitation_mm), 10.0);
+  const totalRain7d = trend.forecast_rainfall_7d_mm;
+  const isAllZeroRain = forecast.every((d) => d.precipitation_mm === 0);
 
   return (
-    <div className="bg-white border border-slate-200 p-6 shadow-sm mb-6">
-      {/* ─── Header & Provider Attribution ─── */}
-      <div className="flex flex-wrap items-center justify-between border-b border-slate-200 pb-4 mb-6 gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-xl">🌤</span>
-          <div>
-            <h3 className="font-bold text-slate-900 text-base tracking-wide uppercase">
-              Weather & Water Forecast {waterBodyName ? `— ${waterBodyName}` : ''}
-            </h3>
-            <p className="text-xs text-slate-500">
-              Centroid: {location.latitude.toFixed(3)}°N, {location.longitude.toFixed(3)}°E · Timezone: {location.timezone}
-            </p>
+    <div className="jn-weather-dashboard">
+      {/* ─── Header ─── */}
+      <div className="jn-weather-header">
+        <div className="jn-weather-title-group">
+          <div className="jn-weather-kicker">
+            <span>🌤</span>
+            <span>METEOROLOGICAL INTELLIGENCE &amp; HYDROLOGICAL FORECAST</span>
+          </div>
+          <h3 className="jn-weather-title">
+            Weather &amp; Water Forecast {waterBodyName ? `— ${waterBodyName}` : ''}
+          </h3>
+          <div className="jn-weather-meta">
+            <span>Centroid: {location.latitude.toFixed(3)}°N, {location.longitude.toFixed(3)}°E</span>
+            <span>•</span>
+            <span>Timezone: {location.timezone}</span>
+            <span>•</span>
+            <span>Updated: {formatUpdatedTimestamp(weather.fetched_at)}</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded">
-            Provider: Open-Meteo (Standard API)
+
+        <div className="jn-weather-header-actions">
+          <span className="jn-provider-badge">
+            <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#0284c7' }} />
+            Open-Meteo · Live Forecast
           </span>
           <button
+            className="jn-refresh-btn"
             onClick={() => fetchWeather(true)}
             disabled={refreshing}
-            className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50"
-            title="Bypass cache and refresh forecast"
+            title="Bypass cache and query Open-Meteo"
           >
-            <span className={refreshing ? 'animate-spin' : ''}>↻</span>
-            {refreshing ? 'Refreshing...' : 'Refresh'}
+            <span style={{ display: 'inline-block', transform: refreshing ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }}>
+              ↻
+            </span>
+            <span>{refreshing ? 'Updating...' : 'Refresh'}</span>
           </button>
         </div>
       </div>
 
-      {/* ─── Top Row: Current Weather & Qualitative Trend ─── */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
-        {/* Panel 1: Current Weather Conditions (5 cols) */}
-        <div className="lg:col-span-5 bg-slate-50 border border-slate-200 p-5 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Current Weather Conditions
-              </span>
-              <span className="text-xs font-medium bg-slate-200 text-slate-700 px-2 py-0.5 rounded">
-                {current.condition}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-4 my-2">
-              <WeatherIcon code={current.condition_code} size={48} />
-              <div>
-                <div className="text-3xl font-extrabold text-slate-900 tracking-tight">
-                  {current.temperature_c.toFixed(1)}°C
-                </div>
-                <div className="text-xs text-slate-500 font-medium">
-                  Feels like {current.apparent_temperature_c.toFixed(1)}°C
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-slate-200 text-xs">
+      <div className="jn-weather-body">
+        {/* ─── Top Row: Current Weather & Qualitative Trend ─── */}
+        <div className="jn-top-row">
+          {/* Card 1: Current Weather Conditions */}
+          <div className="jn-card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
             <div>
-              <span className="text-slate-500 block">Relative Humidity</span>
-              <span className="font-semibold text-slate-800">{current.humidity_percent}%</span>
-            </div>
-            <div>
-              <span className="text-slate-500 block">Rainfall Today</span>
-              <span className="font-semibold text-slate-800">{current.rain_mm.toFixed(1)} mm</span>
-            </div>
-            <div>
-              <span className="text-slate-500 block">Cloud Cover</span>
-              <span className="font-semibold text-slate-800">{current.cloud_cover_percent}%</span>
-            </div>
-            <div>
-              <span className="text-slate-500 block">Wind Speed</span>
-              <span className="font-semibold text-slate-800">
-                {current.wind_speed_kmh.toFixed(1)} km/h {current.wind_direction_deg ? `(${current.wind_direction_deg}°)` : ''}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Panel 2: Rainfall-Driven Water-Level Trend (7 cols) */}
-        <div className={`lg:col-span-7 border p-5 flex flex-col justify-between ${trendStyle.bg}`}>
-          <div>
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <div className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                Rainfall-Driven Water-Level Trend
-              </div>
-              <span className={`text-xs px-2.5 py-0.5 font-bold uppercase tracking-wide rounded ${trendStyle.badgeBg}`}>
-                {trend.trend_arrow} {trend.trend_label}
-              </span>
-            </div>
-
-            <p className="text-xs text-slate-800 leading-relaxed font-medium mb-3">
-              {trend.reason}
-            </p>
-
-            <div className="bg-white/80 border border-slate-200/80 p-3 rounded-sm mb-3">
-              <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 block mb-1">
-                Expected Environmental Response
-              </span>
-              <p className="text-xs text-slate-800 leading-relaxed">
-                {trend.expected_response}
-              </p>
-            </div>
-          </div>
-
-          <div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3 border-t border-slate-200/60 text-xs mb-3">
-              <div>
-                <span className="text-slate-500 block text-[11px]">Rainfall Impact</span>
-                <span className="font-semibold text-slate-800">{trend.rainfall_impact}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[11px]">Dryness Impact</span>
-                <span className="font-semibold text-slate-800">{trend.dryness_impact}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[11px]">7-Day Forecast Rain</span>
-                <span className="font-semibold text-slate-800">{trend.forecast_rainfall_7d_mm} mm</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[11px]">Trend Confidence</span>
-                <span className="font-semibold text-slate-800">{trend.confidence}</span>
-              </div>
-            </div>
-
-            {trend.satellite_baseline_detail && (
-              <div className="text-[11px] text-slate-600 bg-white/60 p-2 border border-slate-200/60 rounded-sm mb-2">
-                <span className="font-semibold">Satellite Baseline: </span>
-                {trend.satellite_baseline_detail}
-              </div>
-            )}
-
-            <div className="text-[10px] text-slate-500 italic">
-              ℹ️ {trend.disclaimer}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ─── Middle Section: 7-Day Forecast Timeline ─── */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
-            7-Day Meteorological Forecast
-          </span>
-          <span className="text-[11px] text-slate-500">Scroll horizontally on smaller screens</span>
-        </div>
-
-        <div className="overflow-x-auto pb-2">
-          <div className="grid grid-cols-7 gap-2 min-w-[700px]">
-            {forecast.map((day, idx) => (
-              <div
-                key={day.date}
-                className={`p-3 border text-center flex flex-col items-center justify-between transition-colors ${
-                  idx === 0
-                    ? 'bg-blue-50/50 border-blue-300 shadow-xs'
-                    : 'bg-slate-50 border-slate-200 hover:bg-slate-100/60'
-                }`}
-              >
-                <div className="text-[11px] font-bold text-slate-700 mb-1">
-                  {formatDayName(day.date, idx)}
-                </div>
-
-                <div className="my-1.5">
-                  <WeatherIcon code={day.condition_code} size={28} />
-                </div>
-
-                <div className="text-xs font-semibold text-slate-800">
-                  {Math.round(day.temp_max_c)}° / <span className="text-slate-500 font-normal">{Math.round(day.temp_min_c)}°</span>
-                </div>
-
-                <div className="mt-2 text-[11px] font-mono text-slate-700">
-                  {day.precipitation_mm > 0 ? (
-                    <span className="text-blue-600 font-medium">{day.precipitation_mm.toFixed(1)} mm</span>
-                  ) : (
-                    <span className="text-slate-400">0 mm</span>
-                  )}
-                </div>
-
-                <div className="text-[10px] text-slate-500 mt-0.5">
-                  {day.precipitation_probability_max != null ? `${day.precipitation_probability_max}% rain` : '—'}
-                </div>
-
-                <div className="text-[10px] text-slate-600 truncate max-w-[85px] mt-1" title={day.condition}>
-                  {day.condition}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* ─── Bottom Section: Forecast Rainfall Visualization ─── */}
-      <div className="bg-slate-50 border border-slate-200 p-5">
-        <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
-          <div>
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-800 block">
-              Forecast Rainfall Trend (7-Day Projection)
-            </span>
-            <span className="text-xs text-slate-500">
-              Daily accumulated precipitation in millimeters (mm)
-            </span>
-          </div>
-
-          <div className="flex items-center gap-6 text-xs">
-            <div>
-              <span className="text-slate-500 block text-[11px]">7-Day Total</span>
-              <span className="font-bold text-blue-700 text-sm">{trend.forecast_rainfall_7d_mm} mm</span>
-            </div>
-            {trend.wettest_day_date && (
-              <div>
-                <span className="text-slate-500 block text-[11px]">Wettest Day</span>
-                <span className="font-semibold text-slate-800">
-                  {trend.wettest_day_rainfall_mm} mm ({trend.wettest_day_date})
+              <div className="jn-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="jn-card-label">CURRENT WEATHER CONDITIONS</span>
+                <span style={{ fontSize: '0.68rem', fontWeight: 700, backgroundColor: '#f1f5f9', color: '#334155', padding: '0.15rem 0.45rem', borderRadius: '2px' }}>
+                  {current.condition}
                 </span>
               </div>
-            )}
+
+              <div className="jn-current-display" style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+                <WeatherIcon code={current.condition_code} size={52} />
+                <div>
+                  <div className="jn-current-temp" style={{ fontSize: '2.5rem', fontWeight: 800, color: '#0f172a' }}>
+                    {current.temperature_c.toFixed(1)}°C
+                  </div>
+                  <div className="jn-current-condition" style={{ fontSize: '0.85rem', fontWeight: 700, color: '#334155' }}>
+                    {current.condition}
+                  </div>
+                  <div className="jn-current-feels" style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                    Feels like {current.apparent_temperature_c.toFixed(1)}°C
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 2x2 Metric Grid with explicit spacing */}
+            <div className="jn-metrics-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', borderTop: '1px solid #f1f5f9', paddingTop: '0.85rem' }}>
+              <div className="jn-metric-item">
+                <span className="jn-metric-label" style={{ fontSize: '0.68rem', color: '#64748b', display: 'block', marginBottom: '0.15rem' }}>Relative Humidity</span>
+                <span className="jn-metric-value" style={{ fontSize: '0.95rem', fontWeight: 700, color: '#0f172a' }}>{current.humidity_percent}%</span>
+              </div>
+              <div className="jn-metric-item">
+                <span className="jn-metric-label" style={{ fontSize: '0.68rem', color: '#64748b', display: 'block', marginBottom: '0.15rem' }}>Rainfall Today</span>
+                <span className="jn-metric-value" style={{ fontSize: '0.95rem', fontWeight: 700, color: '#0f172a' }}>{current.rain_mm.toFixed(1)} mm</span>
+              </div>
+              <div className="jn-metric-item">
+                <span className="jn-metric-label" style={{ fontSize: '0.68rem', color: '#64748b', display: 'block', marginBottom: '0.15rem' }}>Cloud Cover</span>
+                <span className="jn-metric-value" style={{ fontSize: '0.95rem', fontWeight: 700, color: '#0f172a' }}>{current.cloud_cover_percent}%</span>
+              </div>
+              <div className="jn-metric-item">
+                <span className="jn-metric-label" style={{ fontSize: '0.68rem', color: '#64748b', display: 'block', marginBottom: '0.15rem' }}>Wind Speed</span>
+                <span className="jn-metric-value" style={{ fontSize: '0.95rem', fontWeight: 700, color: '#0f172a' }}>
+                  {current.wind_speed_kmh.toFixed(1)} km/h {current.wind_direction_deg ? `(${current.wind_direction_deg}°)` : ''}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2: Water-Level Trend Signal Card */}
+          <div className={`jn-trend-card ${trendClass}`} style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
             <div>
-              <span className="text-slate-500 block text-[11px]">Rain Probability</span>
-              <span className="font-semibold text-slate-800">{trend.rain_probability_label}</span>
+              <div className="jn-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="jn-card-label">WATER-LEVEL TREND OUTLOOK</span>
+                <span style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', color: trendColor }}>
+                  {trend.confidence} Confidence
+                </span>
+              </div>
+
+              {/* Big Visual Signal */}
+              <div className="jn-trend-hero" style={{ display: 'flex', alignItems: 'center', gap: '1rem', margin: '0.5rem 0 1rem' }}>
+                <div className="jn-trend-arrow-box" style={{ color: trendColor, fontSize: '2rem', minWidth: '54px', height: '54px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#ffffff', border: '1px solid #cbd5e1' }}>
+                  {trend.trend_arrow}
+                </div>
+                <div>
+                  <div className="jn-trend-status-title" style={{ fontSize: '1.25rem', fontWeight: 900, color: trendColor, letterSpacing: '0.01em' }}>
+                    {trend.trend_label}
+                  </div>
+                  <div className="jn-trend-status-sub" style={{ fontSize: '0.72rem', color: '#475569', marginTop: '0.15rem' }}>
+                    Rainfall-driven hydrological tendency
+                  </div>
+                </div>
+              </div>
+
+              {/* 4 Factor Badges */}
+              <div className="jn-trend-factors-grid">
+                <div>
+                  <span style={{ fontSize: '0.62rem', color: '#64748b', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>Dryness Impact</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>{trend.dryness_impact}</span>
+                </div>
+                <div>
+                  <span style={{ fontSize: '0.62rem', color: '#64748b', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>Rainfall Impact</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>{trend.rainfall_impact}</span>
+                </div>
+                <div>
+                  <span style={{ fontSize: '0.62rem', color: '#64748b', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>7-Day Rain</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>{trend.forecast_rainfall_7d_mm} mm</span>
+                </div>
+                <div>
+                  <span style={{ fontSize: '0.62rem', color: '#64748b', display: 'block', textTransform: 'uppercase', fontWeight: 700 }}>Confidence</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>{trend.confidence}</span>
+                </div>
+              </div>
+
+              <div className="jn-trend-reason" style={{ fontSize: '0.74rem', lineHeight: 1.45, color: '#1e293b', marginBottom: '0.6rem' }}>
+                {trend.reason}
+              </div>
+            </div>
+
+            <div className="jn-trend-disclaimer" style={{ fontSize: '0.65rem', color: '#64748b', fontStyle: 'italic', borderTop: '1px dashed rgba(0,0,0,0.15)', paddingTop: '0.45rem' }}>
+              ℹ️ Weather-based inference — not a physical water-depth gauge measurement.
             </div>
           </div>
         </div>
 
-        {/* SVG Bar Chart */}
-        <div className="w-full bg-white border border-slate-200 p-4 rounded-sm">
-          <svg viewBox="0 0 700 130" className="w-full h-32 overflow-visible">
-            {/* Grid lines */}
-            <line x1="40" y1="20" x2="680" y2="20" stroke="#f1f5f9" strokeWidth="1" />
-            <line x1="40" y1="60" x2="680" y2="60" stroke="#f1f5f9" strokeWidth="1" />
-            <line x1="40" y1="100" x2="680" y2="100" stroke="#e2e8f0" strokeWidth="1" />
+        {/* ─── 7-Day Forecast Strip ─── */}
+        <div>
+          <div className="jn-section-title-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <span className="jn-section-title">
+              <span>📅</span> 7-DAY METEOROLOGICAL FORECAST
+            </span>
+            <span className="jn-section-hint">Scroll horizontally on smaller screens →</span>
+          </div>
 
-            {/* Y-axis labels */}
-            <text x="32" y="24" textAnchor="end" fontSize="10" fill="#94a3b8" fontFamily="monospace">
-              {maxPrecip.toFixed(0)}
-            </text>
-            <text x="32" y="64" textAnchor="end" fontSize="10" fill="#94a3b8" fontFamily="monospace">
-              {(maxPrecip / 2).toFixed(0)}
-            </text>
-            <text x="32" y="104" textAnchor="end" fontSize="10" fill="#94a3b8" fontFamily="monospace">
-              0
-            </text>
+          <div className="jn-forecast-scroll-container" style={{ overflowX: 'auto', width: '100%', WebkitOverflowScrolling: 'touch' }}>
+            <div
+              className="jn-forecast-strip"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(7, minmax(125px, 1fr))',
+                gap: '0.65rem',
+                minWidth: '890px',
+              }}
+            >
+              {forecast.map((day, idx) => {
+                const dayMeta = formatDayLabel(day.date, idx);
+                const hasRain = day.precipitation_mm > 0;
 
-            {/* Bars */}
-            {forecast.map((day, idx) => {
-              const x = 50 + idx * 90;
-              const barWidth = 44;
-              const barHeight = (day.precipitation_mm / maxPrecip) * 80;
-              const y = 100 - barHeight;
-              const hasRain = day.precipitation_mm > 0;
+                return (
+                  <div
+                    key={day.date}
+                    className={`jn-forecast-card ${idx === 0 ? 'is-today' : ''}`}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0.75rem 0.5rem',
+                      border: idx === 0 ? '2px solid #86efac' : '1px solid #cbd5e1',
+                      backgroundColor: idx === 0 ? '#f0fdf4' : '#f8fafc',
+                    }}
+                  >
+                    <div>
+                      <div className="jn-forecast-day-label" style={{ fontSize: '0.72rem', fontWeight: 800, color: '#0f172a' }}>
+                        {dayMeta.day}
+                      </div>
+                      <div className="jn-forecast-date-sub" style={{ fontSize: '0.65rem', color: '#64748b', marginBottom: '0.35rem' }}>
+                        {dayMeta.date}
+                      </div>
+                    </div>
 
-              return (
-                <g key={day.date}>
-                  {/* Bar */}
-                  <rect
-                    x={x}
-                    y={y}
-                    width={barWidth}
-                    height={Math.max(barHeight, 2)}
-                    fill={hasRain ? '#0284c7' : '#cbd5e1'}
-                    rx="1"
-                    className="transition-all hover:opacity-80"
-                  />
-                  {/* Precipitation Value Label */}
-                  {hasRain && (
+                    <div className="jn-forecast-icon-wrapper" style={{ margin: '0.25rem 0', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <WeatherIcon code={day.condition_code} size={30} />
+                    </div>
+
+                    <div className="jn-forecast-condition" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#334155', minHeight: '1.2rem', textAlign: 'center' }}>
+                      {day.condition}
+                    </div>
+
+                    <div className="jn-forecast-temps" style={{ fontSize: '0.85rem', fontWeight: 800, color: '#0f172a', margin: '0.25rem 0' }}>
+                      {Math.round(day.temp_max_c)}° / <span className="jn-forecast-temp-min" style={{ color: '#64748b', fontWeight: 500 }}>{Math.round(day.temp_min_c)}°</span>
+                    </div>
+
+                    <div>
+                      <div className={`jn-forecast-rain-pill ${hasRain ? 'jn-forecast-rain-has' : 'jn-forecast-rain-none'}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.15rem 0.45rem', fontSize: '0.68rem', fontWeight: 700 }}>
+                        <span>💧</span>
+                        <span>{day.precipitation_mm.toFixed(1)} mm</span>
+                      </div>
+
+                      <div className="jn-forecast-prob" style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.2rem' }}>
+                        {day.precipitation_probability_max != null ? `${day.precipitation_probability_max}% rain` : '0% rain'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* ─── Forecast Rainfall Chart & Probability ─── */}
+        <div className="jn-chart-panel" style={{ backgroundColor: '#f8fafc', border: '1px solid #cbd5e1', padding: '1.15rem' }}>
+          <div className="jn-chart-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem' }}>
+            <div>
+              <span className="jn-section-title" style={{ fontSize: '0.75rem', fontWeight: 800 }}>
+                <span>🌧</span> FORECAST RAINFALL ACCUMULATION
+              </span>
+              <span style={{ fontSize: '0.68rem', color: '#64748b', display: 'block', marginTop: '0.15rem' }}>
+                Projected 7-day precipitation distribution in millimeters (mm)
+              </span>
+            </div>
+
+            <div className="jn-chart-summary-stats" style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
+              <div className="jn-chart-stat-item">
+                <span className="jn-chart-stat-label">7-Day Total</span>
+                <span className="jn-chart-stat-val" style={{ color: totalRain7d > 0 ? '#0284c7' : '#0f172a' }}>
+                  {totalRain7d.toFixed(1)} mm
+                </span>
+              </div>
+              <div className="jn-chart-stat-item">
+                <span className="jn-chart-stat-label">Wettest Day</span>
+                <span className="jn-chart-stat-val">
+                  {trend.wettest_day_date ? `${trend.wettest_day_rainfall_mm} mm (${trend.wettest_day_date})` : 'None (0 mm)'}
+                </span>
+              </div>
+              <div className="jn-chart-stat-item">
+                <span className="jn-chart-stat-label">Rain Probability</span>
+                <span className="jn-chart-stat-val">{trend.rain_probability_label}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* SVG Bar Chart with proper height & visible bars */}
+          <div className="jn-chart-svg-container" style={{ width: '100%', height: '175px', backgroundColor: '#ffffff', border: '1px solid #e2e8f0', padding: '0.5rem' }}>
+            <svg viewBox="0 0 700 130" style={{ width: '100%', height: '100%', overflow: 'visible' }}>
+              {/* Gridlines */}
+              <line x1="45" y1="20" x2="685" y2="20" stroke="#f1f5f9" strokeWidth="1" />
+              <line x1="45" y1="58" x2="685" y2="58" stroke="#f1f5f9" strokeWidth="1" />
+              <line x1="45" y1="96" x2="685" y2="96" stroke="#cbd5e1" strokeWidth="1.5" />
+
+              {/* Y-axis Labels */}
+              <text x="36" y="24" textAnchor="end" fontSize="10" fill="#94a3b8" fontFamily="monospace">
+                {maxPrecip.toFixed(0)}mm
+              </text>
+              <text x="36" y="62" textAnchor="end" fontSize="10" fill="#94a3b8" fontFamily="monospace">
+                {(maxPrecip / 2).toFixed(0)}mm
+              </text>
+              <text x="36" y="100" textAnchor="end" fontSize="10" fill="#64748b" fontWeight="600" fontFamily="monospace">
+                0mm
+              </text>
+
+              {/* Bars for 7 days */}
+              {forecast.map((day, idx) => {
+                const x = 55 + idx * 88;
+                const barWidth = 48;
+                const barHeight = (day.precipitation_mm / maxPrecip) * 76;
+                const y = 96 - barHeight;
+                const hasRain = day.precipitation_mm > 0;
+                const dayMeta = formatDayLabel(day.date, idx);
+
+                return (
+                  <g key={day.date}>
+                    {/* Bar background track */}
+                    <rect x={x} y="20" width={barWidth} height="76" fill="#f8fafc" rx="1" />
+
+                    {/* Active Bar */}
+                    {hasRain ? (
+                      <rect
+                        x={x}
+                        y={y}
+                        width={barWidth}
+                        height={Math.max(barHeight, 4)}
+                        fill="#0284c7"
+                        rx="1"
+                      />
+                    ) : (
+                      /* Zero indicator line */
+                      <line x1={x + 4} y1="95" x2={x + barWidth - 4} y2="95" stroke="#94a3b8" strokeWidth="2" strokeDasharray="2 2" />
+                    )}
+
+                    {/* Value label above bar */}
                     <text
                       x={x + barWidth / 2}
-                      y={Math.max(y - 4, 12)}
+                      y={hasRain ? Math.max(y - 5, 14) : 90}
                       textAnchor="middle"
-                      fontSize="10"
-                      fill="#0369a1"
-                      fontWeight="600"
+                      fontSize="9.5"
+                      fill={hasRain ? '#0369a1' : '#94a3b8'}
+                      fontWeight={hasRain ? '700' : '500'}
                       fontFamily="monospace"
                     >
                       {day.precipitation_mm.toFixed(1)}
                     </text>
-                  )}
-                  {/* Date label */}
-                  <text
-                    x={x + barWidth / 2}
-                    y="118"
-                    textAnchor="middle"
-                    fontSize="10"
-                    fill="#475569"
-                    fontWeight="500"
-                  >
-                    {formatDayName(day.date, idx)}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
+
+                    {/* X-axis Day Label */}
+                    <text
+                      x={x + barWidth / 2}
+                      y="114"
+                      textAnchor="middle"
+                      fontSize="10"
+                      fill="#334155"
+                      fontWeight="700"
+                    >
+                      {dayMeta.day}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+
+          {/* Zero Rain Explicit Banner */}
+          {isAllZeroRain && (
+            <div className="jn-zero-rain-banner">
+              <span>☀️</span>
+              <span>
+                <strong>0 mm Expected:</strong> No measurable rainfall is currently forecast for the next 7 days.
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* ─── Bottom Row: Weather Impact Flow & Satellite Baseline ─── */}
+        <div className="jn-impact-flow-panel">
+          {/* Panel 1: Environmental Flow */}
+          <div className="jn-card">
+            <span className="jn-section-title">
+              <span>🔄</span> WEATHER IMPACT ON WATER EXTENT
+            </span>
+            <div className="jn-flow-steps-container">
+              <div className="jn-flow-step">
+                <div className="jn-flow-step-num">Step 1</div>
+                <div className="jn-flow-step-label">Meteorology</div>
+                <div className="jn-flow-step-desc">
+                  {current.condition} · {current.temperature_c.toFixed(0)}°C
+                </div>
+              </div>
+              <div className="jn-flow-step">
+                <div className="jn-flow-step-num">Step 2</div>
+                <div className="jn-flow-step-label">Precipitation</div>
+                <div className="jn-flow-step-desc">
+                  {totalRain7d.toFixed(1)} mm (7 days)
+                </div>
+              </div>
+              <div className="jn-flow-step">
+                <div className="jn-flow-step-num">Step 3</div>
+                <div className="jn-flow-step-label">Response</div>
+                <div className="jn-flow-step-desc">
+                  {trend.expected_response}
+                </div>
+              </div>
+              <div className="jn-flow-step" style={{ backgroundColor: trendClass === 'jn-trend-rising' ? '#f0fdf4' : (trendClass === 'jn-trend-falling' ? '#fffbeb' : '#f0f9ff'), borderColor: trendColor }}>
+                <div className="jn-flow-step-num" style={{ color: trendColor }}>Outcome</div>
+                <div className="jn-flow-step-label" style={{ color: trendColor, fontWeight: 800 }}>
+                  {trend.trend_arrow} {trend.trend_label}
+                </div>
+                <div className="jn-flow-step-desc">
+                  {trend.confidence} confidence
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Panel 2: Satellite Baseline Integration */}
+          <div className="jn-baseline-card">
+            <div>
+              <span className="jn-section-title" style={{ marginBottom: '0.4rem' }}>
+                <span>🛰</span> SATELLITE BASELINE
+              </span>
+              <div style={{ fontSize: '0.72rem', color: '#475569', lineHeight: 1.45, marginTop: '0.4rem' }}>
+                {trend.satellite_baseline_detail || 'No recent satellite observation baseline available.'}
+              </div>
+            </div>
+            <div style={{ marginTop: '0.65rem', paddingTop: '0.4rem', borderTop: '1px solid #e2e8f0', fontSize: '0.68rem', color: '#64748b' }}>
+              Status: <strong style={{ color: trend.satellite_baseline_status === 'available' ? '#15803d' : '#64748b' }}>
+                {trend.satellite_baseline_status.toUpperCase()}
+              </strong>
+            </div>
+          </div>
+        </div>
+
+        {/* ─── Bottom Callout: What This Means ─── */}
+        <div className="jn-summary-callout">
+          <strong style={{ color: '#0f172a', display: 'block', marginBottom: '0.2rem' }}>
+            WHAT THIS MEANS FOR ENVIRONMENTAL MONITORING:
+          </strong>
+          {totalRain7d < 2.0 ? (
+            <span>
+              Low or zero precipitation is forecast over the next 7 days. Under persistent dry and warm conditions,
+              evaporation will dominate and surface water extent may contract gradually.
+              This inference guides ground-truth inspections and is not a direct physical water-depth measurement.
+            </span>
+          ) : (
+            <span>
+              Forecast rainfall of {totalRain7d.toFixed(1)} mm is anticipated over the 7-day period. Runoff may temporarily expand
+              surface water spread and elevate sediment turbidity proxies (NDTI). Remote sensing observations will confirm physical retention.
+            </span>
+          )}
         </div>
       </div>
     </div>
