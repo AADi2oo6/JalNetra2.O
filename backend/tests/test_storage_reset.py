@@ -301,33 +301,35 @@ def test_database_integrity_and_usability_after_reset(reset_service, db_session:
 
 # ─── API Endpoint Tests ─────────────────────────────────────────────────────────
 
-def test_api_storage_endpoints(client: TestClient):
-    # GET /api/v1/storage/status
-    res = client.get("/api/v1/storage/status")
-    assert res.status_code == 200
-    data = res.json()
-    assert "database_counts" in data
-    assert "local_storage" in data
-    assert "orphans" in data
+def test_api_storage_endpoints(client: TestClient, reset_service):
+    from unittest.mock import patch
+    with patch("app.api.v1.storage.reset_service", reset_service):
+        # GET /api/v1/storage/status
+        res = client.get("/api/v1/storage/status")
+        assert res.status_code == 200
+        data = res.json()
+        assert "database_counts" in data
+        assert "local_storage" in data
+        assert "orphans" in data
 
-    # POST /api/v1/storage/clear/cache
-    res = client.post("/api/v1/storage/clear/cache")
-    assert res.status_code == 200
-    assert res.json()["success"] is True
+        # POST /api/v1/storage/clear/cache
+        res = client.post("/api/v1/storage/clear/cache")
+        assert res.status_code == 200
+        assert res.json()["success"] is True
 
-    # POST /api/v1/storage/clear/processed
-    res = client.post("/api/v1/storage/clear/processed")
-    assert res.status_code == 200
-    assert res.json()["success"] is True
+        # POST /api/v1/storage/clear/processed
+        res = client.post("/api/v1/storage/clear/processed")
+        assert res.status_code == 200
+        assert res.json()["success"] is True
 
-    # POST /api/v1/storage/clear/satellite
-    res = client.post("/api/v1/storage/clear/satellite")
-    assert res.status_code == 200
-    assert res.json()["success"] is True
+        # POST /api/v1/storage/clear/satellite
+        res = client.post("/api/v1/storage/clear/satellite")
+        assert res.status_code == 200
+        assert res.json()["success"] is True
 
-    # POST /api/v1/storage/reset
-    res = client.post("/api/v1/storage/reset")
-    assert res.status_code == 200
-    assert res.json()["success"] is True
-    assert "database" in res.json()
-    assert "filesystem" in res.json()
+        # POST /api/v1/storage/reset
+        res = client.post("/api/v1/storage/reset")
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+        assert "database" in res.json()
+        assert "filesystem" in res.json()
