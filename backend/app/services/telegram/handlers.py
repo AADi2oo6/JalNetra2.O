@@ -656,6 +656,13 @@ class TelegramCommandHandler:
             )
             return
 
+        # Register authorized chat ID for IoT anomaly alerts
+        try:
+            from app.services.iot.monitoring.alerts import register_chat_for_alerts
+            register_chat_for_alerts(chat_id)
+        except Exception:
+            pass
+
         # 1. Check for slash commands (Preserve 100% backward compatibility)
         if raw_text.startswith("/"):
             parts = raw_text.split(maxsplit=1)

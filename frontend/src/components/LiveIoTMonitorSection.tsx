@@ -2,9 +2,15 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   getLatestIoTReading,
   getIoTStatus,
+  getMonitoringStatus,
+  startMonitoring,
+  stopMonitoring,
+  getMonitoringAlerts,
   IoTLatestResponse,
   IoTStatusResponse,
   IoTConnectionState,
+  MonitoringSessionStatus,
+  IoTAlert,
 } from '../api/iot';
 import './LiveIoTMonitorSection.css';
 
@@ -14,6 +20,7 @@ interface LiveIoTMonitorSectionProps {
 }
 
 export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
+  waterBodyId,
   waterBodyName,
 }) => {
   // Only activate for Harsul Reservoir
@@ -23,8 +30,31 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
 
   const [reading, setReading] = useState<IoTLatestResponse | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<IoTStatusResponse | null>(null);
+  const [monitoringStatus, setMonitoringStatus] = useState<MonitoringSessionStatus | null>(null);
+  const [alerts, setAlerts] = useState<IoTAlert[]>([]);
+  const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
+  const [showStopModal, setShowStopModal] = useState<boolean>(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
   const isMountedRef = useRef(true);
+
+  const formatDuration = (totalSec: number) => {
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const formatTimeOnly = (isoString?: string | null) => {
+    if (!isoString) return '—';
+    try {
+      const d = new Date(isoString);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return isoString;
+    }
+  };
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -35,9 +65,10 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
 
     const pollData = async () => {
       try {
-        const [latestRes, statusRes] = await Promise.all([
+        const [latestRes, statusRes, monRes] = await Promise.all([
           getLatestIoTReading().catch(() => null),
           getIoTStatus().catch(() => null),
+          getMonitoringStatus().catch(() => null),
         ]);
 
         if (!isMountedRef.current) return;
@@ -48,6 +79,19 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
         }
         if (statusRes) {
           setDeviceStatus(statusRes);
+        }
+        if (monRes) {
+          setMonitoringStatus(monRes);
+          // If monitoring is active, fetch alerts
+          if (monRes.active) {
+            getMonitoringAlerts()
+              .then(alertList => {
+                if (isMountedRef.current) setAlerts(alertList);
+              })
+              .catch(() => {});
+          } else {
+            setAlerts([]);
+          }
         }
       } catch (err: any) {
         if (!isMountedRef.current) return;
@@ -67,6 +111,40 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
     };
   }, [isTargetWaterBody, waterBodyName]);
 
+  // Actions
+  const handleStartMonitoring = async () => {
+    setIsActionLoading(true);
+    setActionError(null);
+    try {
+      const res = await startMonitoring(waterBodyId);
+      if (!res.success) {
+        setActionError(res.message);
+      } else {
+        const mon = await getMonitoringStatus();
+        setMonitoringStatus(mon);
+      }
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to start monitoring session');
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleConfirmStop = async () => {
+    setIsActionLoading(true);
+    setActionError(null);
+    try {
+      await stopMonitoring();
+      setMonitoringStatus(null);
+      setAlerts([]);
+      setShowStopModal(false);
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to stop monitoring session');
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
   // If not Harsul Reservoir, render nothing
   if (!isTargetWaterBody) {
     return null;
@@ -77,6 +155,8 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
   const isConnected = state === 'CONNECTED';
   const isStale = state === 'STALE';
   const isDisconnected = state === 'DISCONNECTED';
+
+  const isMonitoringActive = monitoringStatus?.active || false;
 
   // Format elapsed time string
   const getElapsedText = () => {
@@ -115,7 +195,7 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
         <div className="iot-title-group">
           <div className="iot-kicker">
             <span className="iot-live-pulse-dot" />
-            TELEMETRY · REAL-TIME SENSING
+            TELEMETRY · REAL-TIME SENSING & ALERTING
           </div>
           <h2 className="iot-main-title">LIVE IoT WATER MONITOR</h2>
           <div className="iot-subtitle">
@@ -133,11 +213,45 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
           </div>
         </div>
 
-        <div className={getStatusBadgeClass()}>
-          <span className="status-dot" />
-          <span>{getStatusBadgeLabel()}</span>
+        <div className="iot-header-actions">
+          {/* Hardware Connection Badge */}
+          <div className={getStatusBadgeClass()}>
+            <span className="status-dot" />
+            <span>{getStatusBadgeLabel()}</span>
+          </div>
+
+          {/* Start / Stop Monitoring Button */}
+          {!isMonitoringActive ? (
+            <button
+              className="iot-btn iot-btn-start"
+              onClick={handleStartMonitoring}
+              disabled={isActionLoading || isDisconnected}
+              title={isDisconnected ? "Connect ESP32 hardware to start monitoring" : "Begin live monitoring & change detection"}
+            >
+              <span>▶</span>
+              <span>{isActionLoading ? 'STARTING...' : 'START MONITORING'}</span>
+            </button>
+          ) : (
+            <button
+              className="iot-btn iot-btn-stop"
+              onClick={() => setShowStopModal(true)}
+              disabled={isActionLoading}
+              title="Stop monitoring and clear temporary session data"
+            >
+              <span>⏹</span>
+              <span>STOP MONITORING</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* ── Action Error Banner ────────────────────────────────── */}
+      {actionError && (
+        <div className="iot-banner iot-banner-disconnected" style={{ marginTop: '1rem' }}>
+          <span>⚠️</span>
+          <div>{actionError}</div>
+        </div>
+      )}
 
       {/* ── Connection Alert Banner (if disconnected or stale) ──── */}
       {isDisconnected && (
@@ -157,6 +271,62 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
           <div>
             <strong>Data Stale:</strong> Last reading was received {getElapsedText()}. Waiting for subsequent sensor packets...
           </div>
+        </div>
+      )}
+
+      {/* ── Phase 2: Active Session Statistics Bar ─────────────── */}
+      {isMonitoringActive && (
+        <div className="iot-session-bar">
+          <div className="iot-session-status-badge">
+            <span className="active-dot" />
+            <span>MONITORING ACTIVE</span>
+          </div>
+
+          <div className="iot-session-metrics">
+            <div className="iot-session-metric-item">
+              <span className="iot-session-metric-key">Started:</span>
+              <span className="iot-session-metric-val">{formatTimeOnly(monitoringStatus?.started_at)}</span>
+            </div>
+            <div className="iot-session-metric-item">
+              <span className="iot-session-metric-key">Duration:</span>
+              <span className="iot-session-metric-val">{formatDuration(monitoringStatus?.duration_seconds || 0)}</span>
+            </div>
+            <div className="iot-session-metric-item">
+              <span className="iot-session-metric-key">Samples:</span>
+              <span className="iot-session-metric-val">{monitoringStatus?.sample_count || 0}</span>
+            </div>
+            <div className="iot-session-metric-item">
+              <span className="iot-session-metric-key">Alerts:</span>
+              <span className="iot-session-metric-val" style={{ color: (monitoringStatus?.alert_count || 0) > 0 ? '#f87171' : '#34d399' }}>
+                {monitoringStatus?.alert_count || 0}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Phase 2: Baseline Progress Banner ──────────────────── */}
+      {isMonitoringActive && (
+        <div className="iot-baseline-bar">
+          {!monitoringStatus?.baseline_established ? (
+            <div className="iot-baseline-establishing">
+              ⏳ Establishing baseline... {monitoringStatus?.baseline_progress || 0} / {monitoringStatus?.baseline_target || 10} samples
+            </div>
+          ) : (
+            <div className="iot-baseline-ready">
+              <div>
+                ✓ Baseline established · Monitoring for sudden changes
+              </div>
+              {monitoringStatus.baseline_values && (
+                <div className="iot-baseline-chips">
+                  <span className="iot-baseline-chip">Level: {monitoringStatus.baseline_values.water_level_percent?.toFixed(1)}%</span>
+                  <span className="iot-baseline-chip">Temp: {monitoringStatus.baseline_values.temperature_c?.toFixed(1)}°C</span>
+                  <span className="iot-baseline-chip">Clarity: {monitoringStatus.baseline_values.clarity_index?.toFixed(1)}</span>
+                  <span className="iot-baseline-chip">TDS: {monitoringStatus.baseline_values.tds_ppm?.toFixed(1)} ppm</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -305,6 +475,64 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
         </div>
       </div>
 
+      {/* ── Phase 2: Live Alerts Panel ─────────────────────────── */}
+      {isMonitoringActive && (
+        <div className="iot-alerts-container">
+          <div className="iot-alerts-header">
+            <div className="iot-alerts-title">
+              <span>🚨</span>
+              <span>LIVE ALERTS</span>
+            </div>
+            <span className="iot-alert-count-pill">
+              {alerts.length} {alerts.length === 1 ? 'ALERT DETECTED' : 'ALERTS DETECTED'}
+            </span>
+          </div>
+
+          {alerts.length === 0 ? (
+            <div className="iot-alerts-empty">
+              <span>✓</span>
+              <span>No anomalous sensor shifts detected. Signal is within normal thresholds.</span>
+            </div>
+          ) : (
+            <div className="iot-alerts-list">
+              {alerts.map(a => (
+                <div
+                  key={a.id}
+                  className={`iot-alert-item ${a.severity === 'HIGH' ? 'iot-alert-item-high' : ''}`}
+                >
+                  <div className="iot-alert-top-row">
+                    <div className="iot-alert-type-group">
+                      <span className={`iot-alert-badge ${a.severity === 'HIGH' ? 'iot-alert-badge-high' : 'iot-alert-badge-warning'}`}>
+                        {a.severity}
+                      </span>
+                      <span className="iot-alert-title">{a.title}</span>
+                    </div>
+                    <span className="iot-alert-time">{formatTimeOnly(a.detected_at)}</span>
+                  </div>
+
+                  <div className="iot-alert-value-row">
+                    <span>{a.message}</span>
+                  </div>
+
+                  <div className="iot-alert-footer-row">
+                    <span>📍 {a.water_body_name} · {a.latitude?.toFixed(4)}°N, {a.longitude?.toFixed(4)}°E</span>
+                    <a
+                      href={a.google_maps_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="iot-alert-map-link"
+                    >
+                      <span>🗺</span>
+                      <span>Open in Google Maps</span>
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Technical Specs Footer ────────────────────────────── */}
       <div className="iot-tech-footer">
         <div className="iot-specs-row">
@@ -333,9 +561,47 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
 
       {/* ── Disclaimer ────────────────────────────────────────── */}
       <div className="iot-disclaimer">
-        ⚠️ IoT readings are live sensor measurements and derived values from the connected JalNetra device.
-        Sensor calibration determines measurement accuracy. Optical clarity is a relative index and does not represent laboratory NTU turbidity.
+        ⚠️ IoT readings and alerts are real-time sensor anomaly signals from the connected JalNetra device.
+        Sensor calibration determines measurement accuracy. Optical clarity is a relative index and does not represent laboratory NTU turbidity or biological potability.
       </div>
+
+      {/* ── Stop Monitoring Confirmation Modal ─────────────────── */}
+      {showStopModal && (
+        <div className="iot-modal-backdrop">
+          <div className="iot-modal">
+            <div className="iot-modal-title">
+              <span>⏹</span>
+              <span>Stop monitoring?</span>
+            </div>
+            <div className="iot-modal-body">
+              This will:
+              <ul className="iot-modal-bullets">
+                <li>Stop recording sensor readings</li>
+                <li>Permanently delete temporary monitoring data</li>
+                <li>Reset anomaly detection and baseline</li>
+                <li>Clear the current monitoring session</li>
+              </ul>
+              Are you sure you want to proceed?
+            </div>
+            <div className="iot-modal-actions">
+              <button
+                className="iot-modal-btn-cancel"
+                onClick={() => setShowStopModal(false)}
+                disabled={isActionLoading}
+              >
+                CANCEL
+              </button>
+              <button
+                className="iot-modal-btn-confirm"
+                onClick={handleConfirmStop}
+                disabled={isActionLoading}
+              >
+                {isActionLoading ? 'STOPPING...' : 'STOP MONITORING'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

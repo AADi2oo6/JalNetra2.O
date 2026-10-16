@@ -24,13 +24,27 @@ class IoTService:
         self._latest_reading: Optional[IoTReading] = None
         self._port_connected: bool = False
         self._last_received_datetime: Optional[datetime] = None
+        self._subscribers = []
+
+    def register_reading_subscriber(self, callback) -> None:
+        """Register a callback invoked whenever a new reading arrives."""
+        with self._lock:
+            if callback not in self._subscribers:
+                self._subscribers.append(callback)
 
     def update_reading(self, reading: IoTReading) -> None:
-        """Update the in-memory latest reading in a thread-safe manner."""
+        """Update the in-memory latest reading in a thread-safe manner and notify subscribers."""
         with self._lock:
             self._latest_reading = reading
             self._last_received_datetime = datetime.now(timezone.utc)
             self._port_connected = True
+            subs = list(self._subscribers)
+
+        for callback in subs:
+            try:
+                callback(reading)
+            except Exception as exc:
+                logger.error("[IoT] Error invoking reading subscriber: %s", exc)
 
     def set_port_connected(self, connected: bool) -> None:
         """Set hardware serial port connectivity state."""

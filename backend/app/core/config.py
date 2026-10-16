@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     IOT_SERIAL_BAUDRATE: int = 115200
     IOT_TARGET_WATER_BODY_NAME: str = "Harsul Reservoir"
 
+    # IoT Live Monitoring & Alert System (Phase 2)
+    IOT_ALERT_WATER_LEVEL_CHANGE_PERCENT: float = 5.0
+    IOT_ALERT_TEMPERATURE_CHANGE_C: float = 2.0
+    IOT_ALERT_CLARITY_CHANGE_PERCENT: float = 20.0
+    IOT_ALERT_TDS_CHANGE_PERCENT: float = 20.0
+    IOT_ALERT_WINDOW_SECONDS: int = 10
+    IOT_ALERT_COOLDOWN_SECONDS: int = 60
+    IOT_ALERT_BASELINE_SAMPLE_COUNT: int = 10
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
