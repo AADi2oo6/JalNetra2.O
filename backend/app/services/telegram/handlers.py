@@ -23,31 +23,31 @@ from app.services.water_body_summary_service import (
     WaterBodyTelegramSummary,
 )
 
+from app.db.repositories.telegram_subscriber_repository import TelegramSubscriberRepository
+
 logger = logging.getLogger("jalnetra.services.telegram.handlers")
 
 
 START_MESSAGE = """🌊 Welcome to JalNetra 2.0
 
-I am your JalNetra water-body monitoring assistant.
+You are now connected to JalNetra alerts.
 
-You can ask me naturally in plain text:
-• "Is the water at Phewa Tal drinkable?"
-• "Is this water toxic?"
-• "Can I bathe here?"
-• "Will the water level increase?"
-• "Will it rain tomorrow?"
-• "Show me the latest image of Phewa Tal"
-• "Where is Phewa Tal?"
-• "How is the water quality of Harsul Reservoir?"
-• "List all water bodies"
+You will receive real-time water monitoring alerts
+when an anomaly is detected at a monitored water body.
 
-Commands:
-/list — List registered water bodies
-/waterbody <name> — Full telemetry & latest image
-/status — Check system status
-/ping — Bot connectivity check
-/ai <question> — Ask AI Assistant
-/help — Show commands & usage"""
+You can ask me about:
+• Water bodies
+• Latest satellite images
+• Water quality indicators
+• Weather
+• Monitoring status
+• IoT alerts"""
+
+STOP_MESSAGE = """🔕 JalNetra alerts disabled.
+
+You will no longer receive automatic monitoring alerts.
+
+Send /start whenever you want to reconnect."""
 
 HELP_MESSAGE = """🌊 JalNetra Helper
 
@@ -102,10 +102,7 @@ class TelegramCommandHandler:
     def _get_db(self):
         if self._db_factory:
             db = self._db_factory()
-            try:
-                yield db
-            finally:
-                db.close()
+            yield db
         else:
             with SessionLocal() as db:
                 yield db
@@ -656,12 +653,20 @@ class TelegramCommandHandler:
             )
             return
 
-        # Register authorized chat ID for IoT anomaly alerts
+        # Extract metadata from incoming message
+        from_user = getattr(message, "from_user", None)
+        user_name = from_user.username if from_user else (message.chat.username if message.chat else None)
+        first_name = from_user.first_name if from_user else None
+        last_name = None
+        chat_type = message.chat.type if message.chat else "private"
+
+        # Update last seen for existing subscriber
         try:
-            from app.services.iot.monitoring.alerts import register_chat_for_alerts
-            register_chat_for_alerts(chat_id)
-        except Exception:
-            pass
+            with self._get_db() as db:
+                repo = TelegramSubscriberRepository(db)
+                repo.update_last_seen(chat_id)
+        except Exception as e:
+            logger.debug("Failed updating last_seen for subscriber: %s", e)
 
         # 1. Check for slash commands (Preserve 100% backward compatibility)
         if raw_text.startswith("/"):
@@ -674,7 +679,36 @@ class TelegramCommandHandler:
             logger.info("Processing Telegram slash command from chat %s: '%s'", chat_id, command)
 
             if command == "/start":
+                # Register or re-activate subscriber in database
+                try:
+                    with self._get_db() as db:
+                        repo = TelegramSubscriberRepository(db)
+                        repo.register_or_update(
+                            chat_id=chat_id,
+                            username=user_name,
+                            first_name=first_name,
+                            last_name=last_name,
+                            chat_type=chat_type,
+                            is_active=True,
+                        )
+                        logger.info("[Telegram Subscribers] Registered/reconnected chat_id %s (@%s)", chat_id, user_name)
+                except Exception as e:
+                    logger.error("[Telegram Subscribers] Error saving subscriber %s: %s", chat_id, e)
+
                 await self.client.send_message(chat_id, START_MESSAGE)
+                return
+
+            if command == "/stop":
+                # Unsubscribe user from alerts (is_active = False, preserve row)
+                try:
+                    with self._get_db() as db:
+                        repo = TelegramSubscriberRepository(db)
+                        repo.set_active_status(chat_id, is_active=False)
+                        logger.info("[Telegram Subscribers] Deactivated alerts for chat_id %s", chat_id)
+                except Exception as e:
+                    logger.error("[Telegram Subscribers] Error stopping subscriber %s: %s", chat_id, e)
+
+                await self.client.send_message(chat_id, STOP_MESSAGE)
                 return
 
             if command == "/help":

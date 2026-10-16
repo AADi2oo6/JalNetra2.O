@@ -100,7 +100,50 @@ def stop_monitoring() -> StopMonitoringResponse:
     return iot_monitoring_engine.stop_session()
 
 
+import asyncio
+import json
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+from app.services.iot.monitoring.event_bus import alert_event_bus
+
+
 @router.get("/monitoring/alerts", response_model=List[IoTAlert])
 def get_monitoring_alerts() -> List[IoTAlert]:
     """Return all alerts generated during the current active monitoring session."""
     return iot_monitoring_engine.get_alerts()
+
+
+@router.get(
+    "/monitoring/alerts/stream",
+    summary="Real-time Server-Sent Events (SSE) stream for IoT alerts",
+    description="Streams real-time iot_alert and session_stopped events directly to browser clients.",
+)
+async def stream_monitoring_alerts(request: Request):
+    """
+    Server-Sent Events endpoint pushing live anomaly alerts directly to the frontend.
+    """
+    async def event_generator():
+        q: asyncio.Queue = asyncio.Queue()
+        alert_event_bus.subscribe(q)
+        try:
+            yield "event: connected\ndata: {\"status\": \"connected\"}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event_type, event_data = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            alert_event_bus.unsubscribe(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

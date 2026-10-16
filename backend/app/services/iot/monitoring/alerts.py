@@ -21,6 +21,14 @@ _active_chat_registry: Set[int] = set()
 def register_chat_for_alerts(chat_id: int) -> None:
     """Register an active user chat ID so they receive real-time IoT alerts."""
     _active_chat_registry.add(chat_id)
+    try:
+        from app.db.database import SessionLocal
+        from app.db.repositories.telegram_subscriber_repository import TelegramSubscriberRepository
+        with SessionLocal() as db:
+            repo = TelegramSubscriberRepository(db)
+            repo.register_or_update(chat_id=chat_id, is_active=True)
+    except Exception as e:
+        logger.debug("Notice persisting chat into db: %s", e)
 
 
 def get_target_chat_ids() -> Set[int]:
@@ -185,42 +193,14 @@ def format_telegram_alert(alert: IoTAlert) -> str:
 
 async def dispatch_telegram_alert(alert: IoTAlert, client: Optional[TelegramClient] = None) -> int:
     """
-    Sends the alert to all registered/allowed Telegram chat IDs.
+    Sends the alert to all registered and active Telegram subscribers.
     Returns number of successful deliveries.
     Exceptions are caught and logged so Telegram failure NEVER stops monitoring.
     """
-    if client is None:
-        if not settings.TELEGRAM_ENABLED or not settings.TELEGRAM_BOT_TOKEN:
-            logger.debug("[IoT Alerts] Telegram disabled or token not set. Skipping push.")
-            return 0
-
-    tg_client = client or TelegramClient()
-    text = format_telegram_alert(alert)
-    reply_markup = {
-        "inline_keyboard": [
-            [{"text": "🗺 Open Location", "url": alert.google_maps_url}]
-        ]
-    }
-
-    target_chats = get_target_chat_ids()
-    if not target_chats:
-        logger.info("[IoT Alerts] No Telegram chat IDs registered to receive alert.")
+    try:
+        from app.services.telegram.alert_broadcaster import telegram_alert_broadcaster
+        res = await telegram_alert_broadcaster.broadcast_alert(alert, client_override=client)
+        return res.get("successful", 0)
+    except Exception as e:
+        logger.error("[IoT Alerts] Error in telegram broadcaster delegation: %s", e)
         return 0
-
-    sent_count = 0
-    for chat_id in target_chats:
-        try:
-            ok = await tg_client.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=reply_markup,
-            )
-            if ok:
-                sent_count += 1
-                logger.info("[IoT Alerts] Successfully sent alert to Telegram chat %s", chat_id)
-            else:
-                logger.warning("[IoT Alerts] Telegram message send rejected for chat %s", chat_id)
-        except Exception as e:
-            logger.warning("[IoT Alerts] Telegram notification failed for chat %s: %s", chat_id, e)
-
-    return sent_count

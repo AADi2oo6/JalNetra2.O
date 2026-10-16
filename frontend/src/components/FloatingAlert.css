@@ -1,0 +1,202 @@
+/* Floating Real-Time Water Alert Toast */
+.floating-alert-container {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  z-index: 99999;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.08);
+  border: 1px solid #e2e8f0;
+  border-left-width: 6px;
+  padding: 16px 18px;
+  box-sizing: border-box;
+  animation: slideInFromRight 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: auto;
+  font-family: inherit;
+}
+
+@keyframes slideInFromRight {
+  0% {
+    transform: translateX(110%);
+    opacity: 0;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Severity left border & highlights */
+.floating-alert-container.severity-critical {
+  border-left-color: #ef4444;
+}
+.floating-alert-container.severity-high {
+  border-left-color: #f97316;
+}
+.floating-alert-container.severity-warning {
+  border-left-color: #eab308;
+}
+.floating-alert-container.severity-info {
+  border-left-color: #3b82f6;
+}
+
+/* Header */
+.floating-alert-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.floating-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.floating-alert-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.floating-alert-heading {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #1e293b;
+}
+
+.floating-alert-close {
+  background: transparent;
+  border: none;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  color: #94a3b8;
+  padding: 0 4px;
+  transition: color 0.15s ease;
+}
+
+.floating-alert-close:hover {
+  color: #334155;
+}
+
+/* Body */
+.floating-alert-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.floating-alert-waterbody {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.floating-alert-type {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.floating-alert-delta {
+  font-size: 0.9rem;
+  font-family: monospace, ui-monospace, SFMono-Regular;
+  font-weight: 600;
+  color: #0369a1;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  padding: 4px 8px;
+  border-radius: 6px;
+  display: inline-block;
+  margin-top: 2px;
+}
+
+.floating-alert-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.floating-severity-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.floating-severity-badge.severity-critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.floating-severity-badge.severity-high {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.floating-severity-badge.severity-warning {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.floating-severity-badge.severity-info {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.floating-alert-time {
+  font-size: 0.76rem;
+  color: #64748b;
+}
+
+.floating-alert-location {
+  font-size: 0.76rem;
+  color: #64748b;
+}
+
+/* Footer & View Button */
+.floating-alert-footer {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.floating-alert-view-btn {
+  background: #0284c7;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.floating-alert-view-btn:hover {
+  background: #0369a1;
+  transform: translateY(-1px);
+}
+
+.floating-alert-view-btn:active {
+  transform: translateY(0);
+}
+
+/* Flash highlight on Live Alerts panel when target scrolled */
+.alert-panel-highlight {
+  outline: 3px solid #0284c7 !important;
+  box-shadow: 0 0 20px rgba(2, 132, 199, 0.4) !important;
+  transition: all 0.3s ease;
+}

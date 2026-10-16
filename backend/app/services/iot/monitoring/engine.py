@@ -155,6 +155,13 @@ class IoTMonitoringEngine:
             self._alerts.clear()
             self._detector = None
 
+            # 3. Publish session_stopped event to SSE clients
+            try:
+                from app.services.iot.monitoring.event_bus import alert_event_bus
+                alert_event_bus.publish("session_stopped", {"active": False, "session_id": session_id})
+            except Exception as e:
+                logger.debug("Failed publishing session_stopped to event bus: %s", e)
+
             logger.info(
                 "[IoT Engine] Monitoring stopped for %s. Samples: %d, Alerts: %d, Temporary CSV deleted: %s",
                 self._water_body_name,
@@ -231,9 +238,17 @@ class IoTMonitoringEngine:
                     alert.message,
                 )
 
-        # Dispatch alerts to Telegram outside lock
+        # Unified Alert Event Bus & Telegram dispatch outside lock
         if new_alerts:
             for alert in new_alerts:
+                # 1. Publish to real-time SSE stream for website Floating Alert & Live Alert Panel
+                try:
+                    from app.services.iot.monitoring.event_bus import alert_event_bus
+                    alert_event_bus.publish("iot_alert", alert.model_dump())
+                except Exception as e:
+                    logger.debug("Failed publishing alert to event bus: %s", e)
+
+                # 2. Dispatch to Telegram broadcaster for all connected subscribers
                 self._dispatch_alert_async(alert)
 
     def _dispatch_alert_async(self, alert: IoTAlert) -> None:

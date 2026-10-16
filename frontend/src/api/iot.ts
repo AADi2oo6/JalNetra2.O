@@ -179,3 +179,26 @@ export async function getMonitoringAlerts(): Promise<IoTAlert[]> {
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   return handleResponse<IoTAlert[]>(res);
 }
+
+export interface TelegramAlertsStatusResponse {
+  configured: boolean;
+  bot_connected: boolean;
+  active_subscribers: number;
+  last_broadcast?: {
+    alert_id: string;
+    total_recipients: number;
+    successful: number;
+    failed: number;
+    timestamp: string;
+  } | null;
+}
+
+export function getAlertsStreamUrl(): string {
+  return resolveApiUrl('/api/v1/iot/monitoring/alerts/stream');
+}
+
+export async function getTelegramAlertsStatus(): Promise<TelegramAlertsStatusResponse> {
+  const url = resolveApiUrl('/api/v1/telegram/alerts/status');
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  return handleResponse<TelegramAlertsStatusResponse>(res);
+}

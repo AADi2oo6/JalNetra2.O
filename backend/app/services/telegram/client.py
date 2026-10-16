@@ -73,15 +73,19 @@ class TelegramClient:
             logger.warning("Telegram getUpdates error: %s", type(e).__name__)
             return []
 
-    async def send_message(
+    async def send_message_detailed(
         self,
         chat_id: int,
         text: str,
         parse_mode: Optional[str] = None,
         reply_markup: Optional[Dict[str, Any]] = None,
-    ) -> bool:
+    ) -> tuple[bool, int, str]:
+        """
+        Send a message and return (success, status_code, description).
+        Safe error logging without exposing bot token or headers.
+        """
         if not self.is_configured:
-            return False
+            return False, 0, "Telegram bot not configured"
         url = f"{self._base_url}/sendMessage"
         payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
         if parse_mode:
@@ -92,14 +96,33 @@ class TelegramClient:
         client = await self._get_client()
         try:
             resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
+            desc = ""
+            try:
                 data = resp.json()
-                return bool(data.get("ok"))
-            logger.warning("Telegram sendMessage returned status %s: %s", resp.status_code, resp.text)
-            return False
+                desc = data.get("description", resp.text[:100])
+                if resp.status_code == 200 and data.get("ok"):
+                    return True, 200, "OK"
+            except Exception:
+                desc = resp.text[:100]
+
+            logger.warning("Telegram sendMessage returned status %s: %s", resp.status_code, desc)
+            return False, resp.status_code, desc
         except Exception as e:
-            logger.warning("Telegram sendMessage failed: %s", type(e).__name__)
-            return False
+            err_name = type(e).__name__
+            logger.warning("Telegram sendMessage failed: %s", err_name)
+            return False, 0, err_name
+
+    async def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        parse_mode: Optional[str] = None,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        ok, _, _ = await self.send_message_detailed(
+            chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup
+        )
+        return ok
 
     async def answer_callback_query(
         self,

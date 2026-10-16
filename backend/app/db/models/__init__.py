@@ -5,6 +5,7 @@ from app.db.models.satellite_asset import SatelliteAsset
 from app.db.models.satellite_observation import SatelliteObservation
 from app.db.models.analysis_run import AnalysisRun
 from app.db.models.cache_entry import CacheEntry
+from app.db.models.telegram_subscriber import TelegramSubscriber
 
 __all__ = [
     "WaterBody",
@@ -13,4 +14,5 @@ __all__ = [
     "SatelliteObservation",
     "AnalysisRun",
     "CacheEntry",
+    "TelegramSubscriber",
 ]

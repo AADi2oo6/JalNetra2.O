@@ -6,12 +6,15 @@ import {
   startMonitoring,
   stopMonitoring,
   getMonitoringAlerts,
+  getTelegramAlertsStatus,
+  TelegramAlertsStatusResponse,
   IoTLatestResponse,
   IoTStatusResponse,
   IoTConnectionState,
   MonitoringSessionStatus,
-  IoTAlert,
 } from '../api/iot';
+import { useIoTAlerts } from '../hooks/useIoTAlerts';
+import { FloatingAlert } from './FloatingAlert';
 import './LiveIoTMonitorSection.css';
 
 interface LiveIoTMonitorSectionProps {
@@ -28,10 +31,18 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
     waterBodyName &&
     waterBodyName.trim().toLowerCase().includes('harsul');
 
+  const {
+    alerts,
+    setAlerts,
+    floatingAlert,
+    dismissFloatingAlert,
+    clearAlerts,
+  } = useIoTAlerts({ enabled: Boolean(isTargetWaterBody) });
+
   const [reading, setReading] = useState<IoTLatestResponse | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<IoTStatusResponse | null>(null);
   const [monitoringStatus, setMonitoringStatus] = useState<MonitoringSessionStatus | null>(null);
-  const [alerts, setAlerts] = useState<IoTAlert[]>([]);
+  const [telegramStatus, setTelegramStatus] = useState<TelegramAlertsStatusResponse | null>(null);
   const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
   const [showStopModal, setShowStopModal] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -65,10 +76,11 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
 
     const pollData = async () => {
       try {
-        const [latestRes, statusRes, monRes] = await Promise.all([
+        const [latestRes, statusRes, monRes, tgRes] = await Promise.all([
           getLatestIoTReading().catch(() => null),
           getIoTStatus().catch(() => null),
           getMonitoringStatus().catch(() => null),
+          getTelegramAlertsStatus().catch(() => null),
         ]);
 
         if (!isMountedRef.current) return;
@@ -80,17 +92,26 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
         if (statusRes) {
           setDeviceStatus(statusRes);
         }
+        if (tgRes) {
+          setTelegramStatus(tgRes);
+        }
         if (monRes) {
           setMonitoringStatus(monRes);
-          // If monitoring is active, fetch alerts
           if (monRes.active) {
+            // Fetch any existing alerts from current active session
             getMonitoringAlerts()
               .then(alertList => {
-                if (isMountedRef.current) setAlerts(alertList);
+                if (isMountedRef.current && alertList && alertList.length > 0) {
+                  setAlerts(prev => {
+                    const existingIds = new Set(prev.map(a => a.id));
+                    const newOnes = alertList.filter(a => !existingIds.has(a.id));
+                    return newOnes.length > 0 ? [...newOnes, ...prev] : prev;
+                  });
+                }
               })
               .catch(() => {});
           } else {
-            setAlerts([]);
+            clearAlerts();
           }
         }
       } catch (err: any) {
@@ -109,7 +130,7 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
       isMountedRef.current = false;
       clearInterval(intervalId);
     };
-  }, [isTargetWaterBody, waterBodyName]);
+  }, [isTargetWaterBody, waterBodyName, clearAlerts, setAlerts]);
 
   // Actions
   const handleStartMonitoring = async () => {
@@ -136,7 +157,7 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
     try {
       await stopMonitoring();
       setMonitoringStatus(null);
-      setAlerts([]);
+      clearAlerts();
       setShowStopModal(false);
     } catch (err: any) {
       setActionError(err.message || 'Failed to stop monitoring session');
@@ -190,6 +211,12 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
 
   return (
     <div className="iot-monitor-container">
+      {/* ── Floating Alert Toast (Top-Right Viewport) ──────────── */}
+      <FloatingAlert
+        alert={floatingAlert}
+        onDismiss={dismissFloatingAlert}
+      />
+
       {/* ── Top Header ────────────────────────────────────────── */}
       <div className="iot-monitor-header">
         <div className="iot-title-group">
@@ -214,6 +241,21 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
         </div>
 
         <div className="iot-header-actions">
+          {/* Telegram Status Badge */}
+          <div className="iot-status-badge iot-status-telegram" title="Telegram alert broadcast connection and active subscriber count">
+            <span
+              className="status-dot"
+              style={{
+                backgroundColor: telegramStatus?.bot_connected ? '#38bdf8' : '#94a3b8',
+                boxShadow: telegramStatus?.bot_connected ? '0 0 8px #38bdf8' : 'none',
+              }}
+            />
+            <span>TG: {telegramStatus?.bot_connected ? 'ONLINE' : 'OFFLINE'}</span>
+            <span className="iot-tg-sub-pill" title="Active Telegram subscribers who receive broadcast alerts">
+              👥 {telegramStatus?.active_subscribers ?? 0}
+            </span>
+          </div>
+
           {/* Hardware Connection Badge */}
           <div className={getStatusBadgeClass()}>
             <span className="status-dot" />
@@ -244,6 +286,16 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
           )}
         </div>
       </div>
+
+      {/* ── Telegram Subscriber Notice Banner ───────────────────── */}
+      {telegramStatus && telegramStatus.active_subscribers === 0 && (
+        <div className="iot-banner iot-banner-stale" style={{ marginTop: '0.75rem' }}>
+          <span>✈️</span>
+          <span>
+            No Telegram subscribers connected. Send <code>/start</code> to the JalNetra bot (<code>@jalNetra_Helperbot</code>) to receive live monitoring alerts on your device.
+          </span>
+        </div>
+      )}
 
       {/* ── Action Error Banner ────────────────────────────────── */}
       {actionError && (
@@ -477,7 +529,7 @@ export const LiveIoTMonitorSection: React.FC<LiveIoTMonitorSectionProps> = ({
 
       {/* ── Phase 2: Live Alerts Panel ─────────────────────────── */}
       {isMonitoringActive && (
-        <div className="iot-alerts-container">
+        <div id="live-alerts-panel" className="iot-alerts-container">
           <div className="iot-alerts-header">
             <div className="iot-alerts-title">
               <span>🚨</span>
