@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional, Set, Dict, Any, List
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.database import SessionLocal
@@ -134,6 +135,7 @@ class TelegramCommandHandler:
 
         row2: List[Dict[str, str]] = [
             {"text": "💧 Water Quality", "callback_data": f"wb_qual:{wb_id}"},
+            {"text": "🌤 Weather", "callback_data": f"wb_weath:{wb_id}"},
             {"text": "📊 Monitoring", "callback_data": f"wb_mon:{wb_id}"},
         ]
         return {"inline_keyboard": [row1, row2]}
@@ -273,6 +275,50 @@ class TelegramCommandHandler:
                 lines.append(f"Cloud Cover: {summary.cloud_cover}")
                 lines.append(f"Apparent Water Extent: {summary.apparent_water_extent}")
                 await self.client.send_message(chat_id, "\n".join(lines))
+
+            elif action == "wb_weath":
+                await self._send_weather_summary(chat_id, db, wb_id)
+
+    async def _send_weather_summary(self, chat_id: int, db: Session, wb_id: str):
+        """Fetches and formats real-time Open-Meteo weather and rainfall-driven water-level trend for Telegram."""
+        from app.services.weather import WeatherService, MissingCoordinatesError
+        weather_svc = WeatherService(db)
+        try:
+            weather = await weather_svc.get_weather_for_water_body(wb_id)
+            lines = [
+                f"🌦 {weather.water_body_name}",
+                "",
+                "Current:",
+                f"{weather.current.temperature_c:.1f}°C · {weather.current.condition}",
+                "",
+                "Rain today:",
+                f"{weather.current.rain_mm:.1f} mm",
+                "",
+                "Next 7 days:",
+                f"{weather.water_level_trend.forecast_rainfall_7d_mm:.1f} mm expected rainfall",
+                "",
+                "Water-level trend:",
+                f"{weather.water_level_trend.trend_arrow} {weather.water_level_trend.trend_label}",
+                "",
+                "Reason:",
+                weather.water_level_trend.reason,
+                "",
+                f"Confidence:\n{weather.water_level_trend.confidence.value}",
+                "",
+                "Note:\nWater-level trend is an environmental estimate, not a measured water-depth reading.",
+            ]
+            await self.client.send_message(chat_id, "\n".join(lines))
+        except MissingCoordinatesError:
+            await self.client.send_message(
+                chat_id,
+                "⚠️ Weather unavailable: This water body does not have valid coordinates.",
+            )
+        except Exception as exc:
+            logger.warning("Weather fetch error for %s: %s", wb_id, exc)
+            await self.client.send_message(
+                chat_id,
+                "⚠️ Weather data is temporarily unavailable from Open-Meteo.",
+            )
 
     async def handle_message(self, message: TelegramMessage):
         """Processes incoming user text message (both slash commands and natural language)."""
@@ -583,14 +629,7 @@ class TelegramCommandHandler:
                     return
 
                 if intent == TelegramIntent.WEATHER:
-                    lines = [
-                        f"🌤 Weather & Climate — {summary.name}",
-                        "",
-                        "Weather API integration is being prepared for the upcoming phase.",
-                        f"Currently, JalNetra tracks satellite observations and spectral quality for {summary.name}.",
-                        f"Latest satellite observation: {summary.latest_observation_date} (Cloud cover: {summary.cloud_cover}).",
-                    ]
-                    await self.client.send_message(chat_id, "\n".join(lines))
+                    await self._send_weather_summary(chat_id, db, target_wb.id)
                     return
 
                 # WATER_BODY_INFO: send full summary card + photo
