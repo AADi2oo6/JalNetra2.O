@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # Map & Visualization Focus Settings
     WATER_BODY_MAP_PADDING_PERCENT: float = 10.0
 
+    # IoT Live Sensor Integration
+    IOT_ENABLED: bool = True
+    IOT_SERIAL_PORT: str = "COM6"
+    IOT_SERIAL_BAUDRATE: int = 115200
+    IOT_TARGET_WATER_BODY_NAME: str = "Harsul Reservoir"
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",

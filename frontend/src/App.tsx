@@ -47,8 +47,19 @@ class ErrorBoundary extends React.Component<
 }
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<string>('map');
-  const [selectedWbIdForAnalysis, setSelectedWbIdForAnalysis] = useState<string | null>(null);
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    try {
+      const p = new URLSearchParams(window.location.search).get('tab');
+      if (p && ['overview', 'map', 'analysis'].includes(p)) return p;
+    } catch {}
+    return 'map';
+  });
+  const [selectedWbIdForAnalysis, setSelectedWbIdForAnalysis] = useState<string | null>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('wb') || null;
+    } catch {}
+    return null;
+  });
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'offline'>('checking');
   const [healthData, setHealthData] = useState<HealthStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);

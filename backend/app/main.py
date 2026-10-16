@@ -41,7 +41,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to start Telegram bot service: %s", e)
 
+    # Initialize IoT ESP32 serial reader worker in background if enabled
+    try:
+        from app.services.iot import serial_reader_worker
+        serial_reader_worker.start()
+    except Exception as e:
+        logger.warning("Failed to start IoT serial reader worker: %s", e)
+
     yield
+
+    # Clean shutdown of IoT serial reader worker
+    try:
+        from app.services.iot import serial_reader_worker
+        serial_reader_worker.stop()
+    except Exception as e:
+        logger.warning("Error stopping IoT serial reader worker: %s", e)
 
     # Clean shutdown of Telegram bot service
     try:

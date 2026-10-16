@@ -22,6 +22,7 @@ import {
 } from '../api/client';
 import { FetchVisualDataModal } from '../components/FetchVisualDataModal';
 import { WeatherSection } from '../components/WeatherSection';
+import { LiveIoTMonitorSection } from '../components/LiveIoTMonitorSection';
 
 interface AnalysisPageProps {
   initialWaterBodyId?: string;
@@ -1346,6 +1347,14 @@ export const AnalysisPage: React.FC<AnalysisPageProps> = ({
               />
             </div>
           </div>
+        )}
+
+        {/* ── Live IoT Water Monitor Section (Harsul Reservoir) ──────── */}
+        {selectedWaterBodyId && (
+          <LiveIoTMonitorSection
+            waterBodyId={selectedWaterBodyId}
+            waterBodyName={selectedWaterBody?.name}
+          />
         )}
 
         {/* ── Weather & Water Forecast Section ──────────────────────── */}
