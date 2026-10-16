@@ -73,7 +73,11 @@ class TelegramClient:
             return []
 
     async def send_message(
-        self, chat_id: int, text: str, parse_mode: Optional[str] = None
+        self,
+        chat_id: int,
+        text: str,
+        parse_mode: Optional[str] = None,
+        reply_markup: Optional[Dict[str, Any]] = None,
     ) -> bool:
         if not self.is_configured:
             return False
@@ -81,6 +85,8 @@ class TelegramClient:
         payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
 
         client = await self._get_client()
         try:
@@ -92,6 +98,30 @@ class TelegramClient:
             return False
         except Exception as e:
             logger.warning("Telegram sendMessage failed: %s", type(e).__name__)
+            return False
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: Optional[str] = None,
+        show_alert: bool = False,
+    ) -> bool:
+        if not self.is_configured:
+            return False
+        url = f"{self._base_url}/answerCallbackQuery"
+        payload: Dict[str, Any] = {"callback_query_id": callback_query_id, "show_alert": show_alert}
+        if text:
+            payload["text"] = text
+
+        client = await self._get_client()
+        try:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                return bool(data.get("ok"))
+            return False
+        except Exception as e:
+            logger.warning("Telegram answerCallbackQuery failed: %s", type(e).__name__)
             return False
 
     async def send_photo(
