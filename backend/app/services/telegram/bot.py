@@ -64,6 +64,18 @@ class TelegramBotService:
         self._bot_username = me.get("username", settings.TELEGRAM_BOT_USERNAME)
         logger.info("Telegram bot authenticated successfully as @%s", self._bot_username)
 
+        # Drain any backlog of stale updates so the bot starts fresh and doesn't replay old queues
+        try:
+            stale_updates = await self.client.get_updates(offset=-1, timeout=1)
+            if stale_updates:
+                last_update_id = stale_updates[-1].get("update_id")
+                if last_update_id is not None:
+                    self._offset = last_update_id + 1
+                    await self.client.get_updates(offset=self._offset, timeout=1)
+                    logger.info("Drained stale Telegram updates, offset set to %s", self._offset)
+        except Exception as e:
+            logger.warning("Could not drain stale updates on startup: %s", e)
+
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
 

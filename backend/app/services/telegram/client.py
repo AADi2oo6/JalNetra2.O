@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -64,6 +65,12 @@ class TelegramClient:
                 data = resp.json()
                 if data.get("ok"):
                     return data.get("result", [])
+            elif resp.status_code == 409:
+                logger.error(
+                    "Telegram getUpdates returned 409 Conflict: Another bot instance is actively polling. Backing off 10s..."
+                )
+                await asyncio.sleep(10.0)
+                return []
             logger.warning("Telegram getUpdates returned status %s", resp.status_code)
             return []
         except httpx.TimeoutException:

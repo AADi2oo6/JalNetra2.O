@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -97,6 +98,7 @@ class TelegramCommandHandler:
         self._db_factory = db_factory
         self.intent_service = intent_service or TelegramIntentService(ai_service=self.ai_service)
         self._allowed_chat_ids: Optional[Set[str]] = self._parse_allowed_chat_ids()
+        self._image_cooldowns: Dict[str, float] = {}
 
     @contextmanager
     def _get_db(self):
@@ -421,6 +423,19 @@ class TelegramCommandHandler:
         wb = service.wb_repo.get_by_id(wb_id)
         wb_name = wb.name if wb else "Water Body"
 
+        # Anti-spam cooldown check: prevent continuous/spam image sending to Telegram
+        cooldown_key = f"{chat_id}:{wb_id}"
+        now = time.time()
+        last_sent = self._image_cooldowns.get(cooldown_key, 0.0)
+        if (now - last_sent) < 15.0:
+            logger.info("Image upload throttled for chat_id=%s, wb_id=%s (cooldown active)", chat_id, wb_id)
+            await self.client.send_message(
+                chat_id,
+                f"⏳ The latest image for {wb_name} was recently requested. Please wait a moment before requesting another image.",
+            )
+            return
+        self._image_cooldowns[cooldown_key] = now
+
         # 1. Resolve latest visual observation using ObservationImageResolver
         latest_visual_result = ObservationImageResolver.get_latest_visual_observation(
             wb_id, service.db, data_dir=service.data_dir
@@ -586,7 +601,10 @@ class TelegramCommandHandler:
         data = query.data or ""
         logger.info("Handling callback query from chat %s: %s", chat_id, data)
 
-        await self.client.answer_callback_query(query.id)
+        try:
+            await self.client.answer_callback_query(str(query.id))
+        except Exception as e:
+            logger.debug("Non-fatal error answering callback query %s: %s", query.id, e)
 
         if ":" not in data:
             return
